@@ -85,6 +85,7 @@ commits that broke this area: `0752ea59`, `7562ec62`, `2a2bd9b5`, `f2f7f770`, `5
 - [ ] **tray upgrade button opens in-app checkout** — Verify that clicking the tray's upgrade button correctly opens the in-app checkout experience. (`078fcfb2`)
 - [ ] **modernized tray menu** — Verify the tray menu's updated layout and functionality match the modernized design. (`b6c363e5`)
 - [ ] **Recording toggle in tray** — Verify that the tray menu has a single toggle to start/stop recording (replacing separate items). (`cdc1d0fd9`)
+- [ ] **tray-only mode (no main window)** — Close the main window to run the app in tray-only mode. Start recording. Verify that owned-browser installation succeeds even with the main window closed. The app should not get stuck on `ready=false` if the main webview isn't available. (`28869d02c`)
 
 ### 3. monitor plug/unplug
 
