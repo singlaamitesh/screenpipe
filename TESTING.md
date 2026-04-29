@@ -85,6 +85,10 @@ commits that broke this area: `0752ea59`, `7562ec62`, `2a2bd9b5`, `f2f7f770`, `5
 - [ ] **tray upgrade button opens in-app checkout** — Verify that clicking the tray's upgrade button correctly opens the in-app checkout experience. (`078fcfb2`)
 - [ ] **modernized tray menu** — Verify the tray menu's updated layout and functionality match the modernized design. (`b6c363e5`)
 - [ ] **Recording toggle in tray** — Verify that the tray menu has a single toggle to start/stop recording (replacing separate items). (`cdc1d0fd9`)
+- [ ] **Tray pause tooltip countdown** — Pause recording from tray menu. Verify tooltip shows "screenpipe — paused, resumes in Xm" and updates every 5 seconds. After auto-resume, tooltip returns to "screenpipe". (`bf42a9128`)
+- [ ] **Tray pause notification** — Pause recording from tray menu. Verify /notify popup appears: "Recording paused — auto-resume in 15m". When auto-resume fires, verify a second notification: "Recording resumed". (`bf42a9128`)
+- [ ] **Pause timer countdown accuracy** — Pause for 2 minutes. Verify tooltip countdown decrements correctly from 2m to 1m59s to 1m58s, etc. (`bf42a9128`)
+- [ ] **Tray pause doesn't lose state on restart** — Pause recording, immediately quit and relaunch. Verify pause timer resumes correctly (countdown continues from where it left off). (`bf42a9128`)
 
 ### 3. monitor plug/unplug
 
