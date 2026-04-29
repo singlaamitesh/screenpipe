@@ -13,7 +13,7 @@ use screenpipe_db::DatabaseManager;
 use screenpipe_db::MeetingRecord;
 
 use crate::server::AppState;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -53,8 +53,16 @@ pub struct StopMeetingRequest {
 
 #[derive(OaSchema, Deserialize, Debug)]
 pub struct ListMeetingsRequest {
-    pub start_time: Option<String>,
-    pub end_time: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "super::time::deserialize_flexible_datetime_option"
+    )]
+    pub start_time: Option<DateTime<Utc>>,
+    #[serde(
+        default,
+        deserialize_with = "super::time::deserialize_flexible_datetime_option"
+    )]
+    pub end_time: Option<DateTime<Utc>>,
     #[serde(default = "default_limit")]
     pub limit: u32,
     #[serde(default)]
@@ -170,11 +178,15 @@ pub(crate) async fn list_meetings_handler(
     State(state): State<Arc<AppState>>,
     Query(request): Query<ListMeetingsRequest>,
 ) -> Result<JsonResponse<Vec<MeetingRecord>>, (StatusCode, JsonResponse<Value>)> {
+    // Convert DateTime<Utc> to ISO 8601 strings for the database
+    let start_time_str = request.start_time.map(|dt| dt.to_rfc3339());
+    let end_time_str = request.end_time.map(|dt| dt.to_rfc3339());
+
     let meetings = state
         .db
         .list_meetings(
-            request.start_time.as_deref(),
-            request.end_time.as_deref(),
+            start_time_str.as_deref(),
+            end_time_str.as_deref(),
             request.limit,
             request.offset,
         )
@@ -439,4 +451,86 @@ pub(crate) async fn stop_meeting_handler(
     }
 
     Ok(JsonResponse(meeting))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_list_meetings_request_relative_dates() {
+        // Test that "7d ago" is correctly deserialized to a DateTime
+        let json = json!({
+            "start_time": "7d ago",
+            "end_time": "now",
+            "limit": 10,
+            "offset": 0
+        });
+
+        let request: ListMeetingsRequest =
+            serde_json::from_value(json).expect("Failed to deserialize ListMeetingsRequest");
+
+        assert!(request.start_time.is_some());
+        assert!(request.end_time.is_some());
+
+        let start = request.start_time.unwrap();
+        let end = request.end_time.unwrap();
+
+        // Verify that the dates are reasonable (within a second or two of expected)
+        let now = Utc::now();
+        let expected_start = now - chrono::Duration::days(7);
+
+        // Allow 2 second tolerance for test execution time
+        let tolerance = chrono::Duration::seconds(2);
+        assert!(
+            (start - expected_start).abs() < tolerance,
+            "start_time should be ~7 days ago, got {:?}",
+            start
+        );
+
+        // end_time should be very close to now
+        assert!(
+            (end - now).abs() < tolerance,
+            "end_time should be ~now, got {:?}",
+            end
+        );
+    }
+
+    #[test]
+    fn test_list_meetings_request_iso8601_dates() {
+        // Test that ISO 8601 dates still work
+        let json = json!({
+            "start_time": "2024-01-15T10:30:00Z",
+            "end_time": "2024-01-16T10:30:00Z",
+            "limit": 20
+        });
+
+        let request: ListMeetingsRequest =
+            serde_json::from_value(json).expect("Failed to deserialize ListMeetingsRequest");
+
+        assert!(request.start_time.is_some());
+        assert!(request.end_time.is_some());
+
+        let start = request.start_time.unwrap();
+        let end = request.end_time.unwrap();
+
+        assert_eq!(start.to_rfc3339(), "2024-01-15T10:30:00+00:00");
+        assert_eq!(end.to_rfc3339(), "2024-01-16T10:30:00+00:00");
+    }
+
+    #[test]
+    fn test_list_meetings_request_empty_dates() {
+        // Test that optional dates work
+        let json = json!({
+            "limit": 10
+        });
+
+        let request: ListMeetingsRequest =
+            serde_json::from_value(json).expect("Failed to deserialize ListMeetingsRequest");
+
+        assert!(request.start_time.is_none());
+        assert!(request.end_time.is_none());
+        assert_eq!(request.limit, 10);
+    }
 }
