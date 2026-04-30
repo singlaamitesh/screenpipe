@@ -113,4 +113,20 @@ impl DeviceManager {
     pub fn is_running_mut(&self, device: &AudioDevice) -> Option<Arc<AtomicBool>> {
         self.states.get(device).map(|s| s.value().clone())
     }
+
+    /// Register a pre-built `AudioStream` (e.g. `AudioStream::from_wav`)
+    /// without going through `from_device` / OS audio capture. Used by
+    /// the diarization eval harness so `record_and_transcribe` can drive
+    /// the full pipeline (source_buffer → VAD → segmentation → embedding
+    /// → clustering) on a wav fixture instead of a real cpal device.
+    /// Production paths must keep using `start_device`.
+    pub async fn register_stream(
+        &self,
+        device: AudioDevice,
+        stream: Arc<AudioStream>,
+        is_running: Arc<AtomicBool>,
+    ) {
+        self.streams.insert(device.clone(), stream);
+        self.states.insert(device, is_running);
+    }
 }

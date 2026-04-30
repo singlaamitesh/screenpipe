@@ -23,6 +23,14 @@ pub struct TranscriptionResult {
     pub error: Option<String>,
     pub start_time: f64,
     pub end_time: f64,
+    /// In-memory clustering label produced by `EmbeddingManager` for this
+    /// segment (a stringified usize like "1", "2", or "?" on force-merge
+    /// fallback). Distinct from the DB-side speaker_id assigned during
+    /// `process_transcription_result` — that's nearest-centroid against
+    /// stored speakers, this is the live cluster id from the current run.
+    /// Used by the diarization eval to score the in-memory clustering
+    /// without contaminating it with cross-run DB state.
+    pub speaker_label: Option<String>,
 }
 
 impl TranscriptionResult {
@@ -384,6 +392,7 @@ mod tests {
             error: None,
             start_time: 0.0,
             end_time: 1.0,
+            speaker_label: None,
         };
 
         let insert_result = process_transcription_result(

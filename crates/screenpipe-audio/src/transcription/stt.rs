@@ -353,6 +353,16 @@ pub async fn run_stt(
 ) -> Result<TranscriptionResult> {
     let audio = segment.samples.clone();
     let sample_rate = segment.sample_rate;
+    // Capture the in-memory cluster label (stringified usize from
+    // EmbeddingManager, or "?" on force-merge fallback). The eval harness
+    // reads this to score clustering quality without round-tripping
+    // through the DB-clustered speaker_id, which would mix the cross-run
+    // centroid history into a per-run measurement.
+    let speaker_label = if segment.speaker.is_empty() {
+        None
+    } else {
+        Some(segment.speaker.clone())
+    };
     match session
         .transcribe(&audio, sample_rate, &device.to_string())
         .await
@@ -372,6 +382,7 @@ pub async fn run_stt(
             speaker_embedding: segment.embedding.clone(),
             start_time: segment.start,
             end_time: segment.end,
+            speaker_label,
         }),
         Err(e) => {
             error!("STT error for input {}: {:?}", device, e);
@@ -390,6 +401,7 @@ pub async fn run_stt(
                 speaker_embedding: Vec::new(),
                 start_time: segment.start,
                 end_time: segment.end,
+                speaker_label,
             })
         }
     }

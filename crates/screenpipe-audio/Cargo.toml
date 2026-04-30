@@ -157,8 +157,8 @@ name = "screenpipe-audio"
 path = "examples/screenpipe-audio.rs"
 
 [[bin]]
-name = "eval-diarization"
-path = "src/bin/eval_diarization.rs"
+name = "eval-diarization-v2"
+path = "src/bin/eval_diarization_v2.rs"
 
 [[bin]]
 name = "compose-fixture"

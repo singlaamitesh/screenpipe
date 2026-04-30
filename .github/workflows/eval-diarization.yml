@@ -8,13 +8,10 @@
 # see the empirical impact of tuning changes (PR #3107 motivated this — a
 # 0.55 → 0.65 cosine-distance threshold change shipped without numbers).
 #
-# v1 caveat: the binary scores `prepare_segments` + `EmbeddingManager`
-# directly on whole-file embeddings, so it does NOT exercise the chunked
-# path in `source_buffer.rs` where the merge threshold actually fires.
-# Threshold-tuning PRs will show zero delta here until v2 lands (drives
-# AudioManager end-to-end via AudioStream::from_wav). Until then, treat
-# this signal as "did we regress the segmentation/embedding pipeline"
-# rather than "did this threshold change help".
+# v2 drives `AudioManager` end-to-end via `AudioStream::from_wav`, so
+# the chunked merge path in `source_buffer.rs` actually runs and
+# threshold-tuning PRs produce real numbers (v1 bypassed source_buffer
+# by feeding `prepare_segments` whole-file samples).
 #
 # Cost: VoxConverse dev split is ~1.9 GB; cached on first run, ~30s after.
 # Total wall time per PR: ~5–8 min once the cache is warm.
@@ -29,8 +26,11 @@ on:
       - 'crates/screenpipe-audio/src/transcription/**'
       - 'crates/screenpipe-audio/src/segmentation/**'
       - 'crates/screenpipe-audio/src/eval/**'
-      - 'crates/screenpipe-audio/src/bin/eval_diarization.rs'
+      - 'crates/screenpipe-audio/src/bin/eval_diarization_v2.rs'
       - 'crates/screenpipe-audio/src/core/stream.rs'
+      - 'crates/screenpipe-audio/src/core/source_buffer.rs'
+      - 'crates/screenpipe-audio/src/core/run_record_and_transcribe.rs'
+      - 'crates/screenpipe-audio/src/device/device_manager.rs'
       - 'crates/screenpipe-audio/evals/**'
       - 'crates/screenpipe-db/src/db.rs'
       - '.github/workflows/eval-diarization.yml'
@@ -124,7 +124,7 @@ jobs:
         run: bash crates/screenpipe-audio/evals/download_voxconverse.sh
 
       - name: Build eval binary
-        run: cargo build --release --bin eval-diarization
+        run: cargo build --release --bin eval-diarization-v2
 
       - name: Run eval on fixtures
         env:
@@ -140,7 +140,7 @@ jobs:
               continue
             fi
             echo "==> running eval on ${stem}"
-            /usr/bin/time -v ./target/release/eval-diarization \
+            /usr/bin/time -v ./target/release/eval-diarization-v2 \
               --audio "$audio" \
               --rttm  "$rttm" \
               > "/tmp/eval-results/${stem}.json" \

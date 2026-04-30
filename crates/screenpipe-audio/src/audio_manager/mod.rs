@@ -1,5 +1,6 @@
 pub mod builder;
 mod device_monitor;
+mod eval;
 mod manager;
 mod reconciliation;
 pub use builder::*;

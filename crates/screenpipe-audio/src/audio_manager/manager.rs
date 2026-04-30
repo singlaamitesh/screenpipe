@@ -99,21 +99,27 @@ struct MeetingEventData {
 
 type RecordingHandlesMap = DashMap<AudioDevice, Arc<Mutex<JoinHandle<Result<()>>>>>;
 
+/// Per-transcript callback used by the diarization eval harness to
+/// observe `TranscriptionResult`s as they leave the audio pipeline,
+/// before they're handed to `handle_new_transcript`. Production never
+/// installs one of these — keep `on_transcription_emit` as `None`.
+pub type TranscriptionEmitCallback = Arc<dyn Fn(&TranscriptionResult) + Send + Sync>;
+
 #[derive(Clone)]
 pub struct AudioManager {
-    options: Arc<RwLock<AudioManagerOptions>>,
-    device_manager: Arc<DeviceManager>,
+    pub(super) options: Arc<RwLock<AudioManagerOptions>>,
+    pub(super) device_manager: Arc<DeviceManager>,
     segmentation_manager: Arc<SegmentationManager>,
-    status: Arc<RwLock<AudioManagerStatus>>,
+    pub(super) status: Arc<RwLock<AudioManagerStatus>>,
     db: Arc<DatabaseManager>,
     vad_engine: Arc<Mutex<Box<dyn VadEngine + Send>>>,
     recording_handles: Arc<RecordingHandlesMap>,
-    recording_sender: Arc<crossbeam::channel::Sender<AudioInput>>,
-    recording_receiver: Arc<crossbeam::channel::Receiver<AudioInput>>,
+    pub(super) recording_sender: Arc<crossbeam::channel::Sender<AudioInput>>,
+    pub(super) recording_receiver: Arc<crossbeam::channel::Receiver<AudioInput>>,
     transcription_receiver: Arc<crossbeam::channel::Receiver<TranscriptionResult>>,
     transcription_sender: Arc<crossbeam::channel::Sender<TranscriptionResult>>,
-    transcription_receiver_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
-    recording_receiver_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
+    pub(super) transcription_receiver_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
+    pub(super) recording_receiver_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
     pub metrics: Arc<AudioPipelineMetrics>,
     meeting_detector: Option<Arc<MeetingDetector>>,
     /// Whether transcription is currently paused (legacy, always false — deferral removed).
@@ -121,6 +127,13 @@ pub struct AudioManager {
     /// Optional callback invoked after each audio transcription DB insert.
     /// Used by the hot frame cache to receive live audio updates.
     on_transcription_insert: Option<crate::transcription::AudioInsertCallback>,
+    /// Optional callback invoked once per `TranscriptionResult` *before*
+    /// the transcript is handed to `handle_new_transcript`. Used by the
+    /// diarization eval harness to capture the in-memory clustering
+    /// label (`speaker_label`) without scraping the DB. Production never
+    /// sets this — keep it None unless you're driving the manager from
+    /// an offline harness.
+    on_transcription_emit: Option<TranscriptionEmitCallback>,
     /// Unified transcription engine. Set after model loading in start_audio_receiver_handler.
     engine: Arc<RwLock<Option<TranscriptionEngine>>>,
     /// Handle to the reconciliation background task so we can abort it on shutdown.
@@ -192,6 +205,7 @@ impl AudioManager {
             meeting_detector,
             transcription_paused: Arc::new(AtomicBool::new(false)),
             on_transcription_insert: None,
+            on_transcription_emit: None,
             engine: Arc::new(RwLock::new(None)),
             reconciliation_handle: Arc::new(RwLock::new(None)),
             drm_stopped_devices: Arc::new(RwLock::new(Vec::new())),
@@ -205,6 +219,15 @@ impl AudioManager {
     /// Must be called before `start()`.
     pub fn set_on_transcription_insert(&mut self, cb: crate::transcription::AudioInsertCallback) {
         self.on_transcription_insert = Some(cb);
+    }
+
+    /// Set a callback that fires once per `TranscriptionResult` *before* it
+    /// is forwarded to `handle_new_transcript` (so the in-memory clustering
+    /// label survives even if DB insertion fails / is skipped). Must be
+    /// called before `start()` / `start_with_wav()`. Used by the diarization
+    /// eval harness; production code should not set this.
+    pub fn set_on_transcription_emit(&mut self, cb: TranscriptionEmitCallback) {
+        self.on_transcription_emit = Some(cb);
     }
 
     pub async fn start(&self) -> Result<()> {
@@ -562,7 +585,7 @@ impl AudioManager {
         Ok(recording_handle)
     }
 
-    async fn start_audio_receiver_handler(&self) -> Result<JoinHandle<()>> {
+    pub(super) async fn start_audio_receiver_handler(&self) -> Result<JoinHandle<()>> {
         let transcription_sender = self.transcription_sender.clone();
         let segmentation_manager = self.segmentation_manager.clone();
         let segmentation_model_path = segmentation_manager
@@ -851,7 +874,7 @@ impl AudioManager {
         }))
     }
 
-    async fn start_transcription_receiver_handler(&self) -> Result<JoinHandle<()>> {
+    pub(super) async fn start_transcription_receiver_handler(&self) -> Result<JoinHandle<()>> {
         let transcription_receiver = self.transcription_receiver.clone();
         let db = self.db.clone();
         let options = self.options.read().await;
@@ -860,14 +883,53 @@ impl AudioManager {
         drop(options); // Release lock before spawning
         let metrics = self.metrics.clone();
         let on_insert = self.on_transcription_insert.clone();
-        Ok(tokio::spawn(handle_new_transcript(
+        let on_emit = self.on_transcription_emit.clone();
+
+        // Fast path: no emit hook installed (production). Run
+        // `handle_new_transcript` directly against the manager's
+        // transcription_receiver as before — no extra task or channel
+        // hop on the hot path.
+        if on_emit.is_none() {
+            return Ok(tokio::spawn(handle_new_transcript(
+                db,
+                transcription_receiver,
+                transcription_engine,
+                use_pii_removal,
+                metrics,
+                on_insert,
+            )));
+        }
+
+        // Eval / harness path: spawn a forwarding task that fires the
+        // emit callback for every transcript, then re-sends it to the
+        // existing handler via a sibling crossbeam channel. Keeps the
+        // `handle_new_transcript` signature stable.
+        let on_emit = on_emit.unwrap();
+        let (forward_tx, forward_rx) = crossbeam::channel::bounded::<TranscriptionResult>(1024);
+        let forward_rx = Arc::new(forward_rx);
+
+        let forward_handle = tokio::spawn(handle_new_transcript(
             db,
-            transcription_receiver,
+            forward_rx,
             transcription_engine,
             use_pii_removal,
             metrics,
             on_insert,
-        )))
+        ));
+
+        Ok(tokio::spawn(async move {
+            while let Ok(result) = transcription_receiver.recv() {
+                (on_emit)(&result);
+                if forward_tx.send(result).is_err() {
+                    break;
+                }
+            }
+            // Drop the forward sender so handle_new_transcript exits
+            // its `while recv()` loop cleanly when the upstream channel
+            // closes.
+            drop(forward_tx);
+            let _ = forward_handle.await;
+        }))
     }
 
     pub async fn shutdown(&self) -> Result<()> {
