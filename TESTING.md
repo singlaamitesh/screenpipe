@@ -198,6 +198,7 @@ commits: `6dd5d98e`, `831ad258`
 - [ ] **window capture only on changed frames** — window enumeration (CGWindowList) should NOT run on skipped frames. verify by checking CPU on idle multi-monitor setup.
 - [ ] **Meeting app OCR force** — Open a meeting app (Zoom, Teams, Meet). Verify OCR is forced for these apps even if accessibility is available. (`b18ae2253`)
 - [ ] **Accessibility automation properties** — Verify automation properties (labels, roles, automation IDs) are correctly captured in the accessibility tree across Windows, macOS, and Linux. (`1b7d0db5b`)
+- [ ] **Apple Vision per-word OCR fast path** — Browse an app with lots of text (e.g., Wikipedia article with 500+ words). Verify OCR database inserts are fast (bulk VALUES insert, not 500 individual RETURNING queries). Check logs for no "Slow DB batch insert" warnings. Regression: `6f3f80dd3` (Apple per-word records now use level="0" for bulk-insert fast path, not level="5" which hit expensive per-row insert).
 - [ ] **DB write coalesce queue** — Under heavy load (e.g. many pipes + high FPS), verify no "database is locked" errors and no vision stalls due to write contention. (`39c016cb3`, `d119d060d`, `231521192`)
 - [ ] **Windows idle CPU reduction** — Verify low CPU usage on Windows when screen is idle, using event-driven hooks and caching. (`d2c9d1fb8`)
 - [ ] **reduced CPU spikes in vision/capture pipeline** — Actively browse and use applications, verifying that CPU spikes in the vision/capture pipeline are significantly reduced. (`8f7294e6`)
