@@ -43,7 +43,9 @@ commits that broke this area: `0752ea59`, `d89c5f14`, `4a64fd1a`, `fa591d6e`, `8
 - [ ] **no space jump on hide** — hiding the overlay should NOT switch you to a different space.
 - [ ] **screen recording visibility setting** — toggle "show in screen recording" in settings. overlay should appear/disappear from screen recordings accordingly (`206107ba`).
 - [ ] **search panel focus** — open search, keyboard focus is in search input immediately (`2315a39c`, `1f2681e3`).
-- [ ] **ghost clicks after hide** — hide overlay via `order_out`. clicking where overlay was should NOT trigger overlay buttons (`32e1a962`).
+- [ ] **ghost clicks after hide** — hide overlay via `order_out`. clicking where overlay was should NOT trigger overlay buttons (`32e1a962`)
+- [ ] **recording shortcuts cancel on escape** — Press shortcut to start recording dialog. Press Escape to cancel. Verify recording is not started. (`210f1a882`)
+- [ ] **recording shortcuts cancel on click-outside** — Open recording shortcuts dialog. Click outside the dialog area. Verify it closes and recording is not started. (`210f1a882`).
 - [ ] **pinch-to-zoom works** — pinch gesture on trackpad zooms timeline without needing to click first (`d99444a7`, `523a629e`).
 - [ ] **shortcut reminder on all Spaces** — switch between 3+ Spaces (including fullscreen apps). reminder pill stays visible on every Space simultaneously.
 - [ ] **shortcut reminder on fullscreen app** — fullscreen Chrome/Safari, reminder shows at top center. not just leftmost Space.
@@ -206,6 +208,9 @@ commits: `6dd5d98e`, `831ad258`
 - [ ] **OCR bounding boxes normalized on Windows/Linux** — On Windows and Linux, verify that OCR bounding boxes are correctly normalized to the 0-1 range, ensuring consistent text overlay and interaction. (`aba74513`)
 - [ ] **Debounced monitor capture errors** — Simulate transient monitor capture errors. Verify that these errors are debounced and do not lead to excessive error logging or app crashes.
 - [ ] **Focus-aware capture** — Enable "Only record focused monitor" in settings. Verify that Screenpipe only captures frames and runs OCR for the monitor that currently has the focused window. (`886b5c05d`)
+- [ ] **Multi-line AX text node per-line bboxes** — Open an app with multi-line text in accessibility nodes (e.g., long labels). Verify each line has its own bounding box for accurate selection and interaction. (`b86341d7a`)
+- [ ] **Chromium line capture fallback** — In Chrome/Edge/Brave, select multi-line text. Verify line capture works even if AXLineForIndex FFI fails (uses binary-search fallback). No blank lines in selection. (`a8540a6bc`)
+- [ ] **Vision-stall false alarm elimination** — Leave idle on a Zoom call or slide deck for 3+ minutes. Verify logs show NO `vision-stall WARN` messages and tray shows no false "Error" indicator. Dedup-skip must update `last_db_write_ts`. (`b035b8ebc`, `a08ec9140`)
 
 ### 6. Battery Saver Mode
 
@@ -340,6 +345,8 @@ commits: `8a5f51dd`, `0b0d8090`, `7e58564e`, `2522a7e2`, `f3e55dbc`, `79f2913f`
 - [ ] **privacy settings reordering** — Verify that the Security section appears first in the Privacy settings tab. (`4718785b6`)
 - [ ] **password field filtering** — Verify that password fields are skipped in the accessibility tree and not stored as OCR/text. (`8159641f5`, `d39e42e5b`)
 - [ ] **browser extension popup filtering** — Verify that browser extension popups (like Bitwarden) are filtered and not captured in the accessibility tree or as black frames. (`52d20987a`, `449ae7a68`, `931db40b6`)
+- [ ] **ChatGPT OAuth UX improvements** — In AI presets, set up ChatGPT provider via OAuth. Verify the UX flow is smooth (clear instructions, proper token handling, no errors). (`fb1122e50`)
+- [ ] **Zoom OAuth scaffolding** — Verify that Zoom OAuth connection is available in the integrations or AI presets (scaffolding in place, ready for setup). (`719f98500`)
 
 commits: `8a5f51dd`, `0b0d8090`
 
@@ -376,9 +383,10 @@ commits: `87abb00d`, `9464fdc9`, `0f9e43aa`, `7ea15f32`
 
 ### 12. timeline & search
 
-commits: `f1255eac`, `25cbdc6b`, `2529367d`, `d9821624`, `e61501da`, `039d5fea`, `50ff4f4c`, `91cc4371`, `bcce42796`, `a98fa2991`, `0ff93b167`, `adbbb8f84`
+commits: `f1255eac`, `25cbdc6b`, `2529367d`, `d9821624`, `e61501da`, `039d5fea`, `50ff4f4c`, `91cc4371`, `bcce42796`, `a98fa2991`, `0ff93b167`, `adbbb8f84`, `b628048a2`
 
 - [ ] **arrow key navigation** — left/right arrow keys navigate timeline frames (`f1255eac`).
+- [ ] **empty-state arrow buttons fixed** — In timeline with no results, arrow buttons don't navigate in wrong direction. Up/down arrows work correctly on empty state. (`b628048a2`)
 - [ ] **search results sorted by time** — search results appear in chronological order (`25cbdc6b`).
 - [ ] **no frame clearing during navigation** — navigating timeline doesn't cause frames to disappear and reload (`2529367d`).
 - [ ] **URL detection in frames** — URLs visible in screenshots are extracted and shown as clickable pills (`50ef52d1`, `aa992146`).
@@ -397,6 +405,7 @@ commits: `f1255eac`, `25cbdc6b`, `2529367d`, `d9821624`, `e61501da`, `039d5fea`,
 - [ ] **Search navigation race condition** — Verify that search navigation works reliably even if the webview is still mounting (retries should handle it). (`2015137a1`)
 - [ ] **Consolidated text search** — Perform keyword searches. Verify results are correctly pulled from the consolidated `frames.full_text` and `frames_fts`. (`adbbb8f84`)
 - [ ] **Keyword search accessibility** — Keyword search should find content within accessibility-only frames and utilize `frames_fts` for comprehensive accessibility text searching.
+- [ ] **on_screen filter for accessibility search** — Perform search query with `on_screen=true` filter. Verify it correctly filters frames to show only on-screen accessibility results. (`772c659b5`)
 - [ ] **Keyword search logic** — Verify that keyword search SQL correctly uses `OR` instead of `UNION` within `IN()`.
 - [ ] **Search prompt accuracy** — Verify that search prompts are improved to prevent false negatives from over-filtering.
 - [ ] **Past-day timeline navigation** — Navigate the timeline to past days (e.g., using date picker or arrow keys). Verify that data loads correctly and the timeline behaves as expected.
@@ -672,6 +681,7 @@ commits: `fa887407`, `815f52e6`, `60840155`, `e66c3ff8`, `c905ffbf`, `01147096`,
 - [ ] **Surface LLM errors in chat UI** — Interact with the chat UI using an AI provider under conditions that would cause LLM errors (e.g., exhausted credits, rate limits). Verify these errors are clearly surfaced to the user.
 - [ ] **Pipe preset bug fixes and credit drain prevention** — Thoroughly test creating, editing, and switching pipe presets to ensure no bugs, especially those that might lead to unexpected cloud credit usage or misconfiguration.
 - [ ] **pipe UI improvements** — Verify the overall improvements to the Pipes UI, ensuring a better user experience. (`2e68400c`)
+- [ ] **Pipes UI anchor nav replaced with client-side tab switching** — Open Pipes section. Verify that navigation tabs work smoothly without page reloads (client-side routing). No anchor (#) navigation. (`674333df9`)
 - [ ] **proper spinner icon for pipe refresh button** — Verify that the pipe refresh button displays the correct spinner icon during loading states. (`b709af2f`)
 - [ ] **ChatGPT OAuth provider in pipes** — Configure ChatGPT OAuth provider. Verify that pipes using ChatGPT work correctly.
 - [ ] **Reduced excessive Pi restarts** — When changing AI preset values or other settings, verify that excessive Pi restarts are reduced. Monitor logs for unnecessary restart messages.
@@ -773,10 +783,13 @@ commits: `fc830b43`
 
 - [ ] **GPU error handling & telemetry** — Verify that GPU errors are handled gracefully and CPU/GPU telemetry is correctly reported in logs. (`0d42ea221`)
 - [ ] **Clipboard thread leak** — Verify that long-running sessions do not exhibit gradual input lag or memory growth due to clipboard thread leaks. (`0718c2e03`, `f0adcddd0`)
+- [ ] **Clipboard capture privacy toggle** — In settings, toggle "Disable clipboard capture" on/off. Verify that when enabled, clipboard contents are not recorded or indexed. (`48fef33f1`)
 
 ### 24. Data Management
 
 - [ ] **Delete local data confirmation** — Use the "Delete device local data" feature. Verify an `AlertDialog` appears instead of a standard `window.confirm`. (`b5db080d6`)
+- [ ] **Delete last N minutes retention fix** — Use "Delete last N minutes" feature. Verify that both MP4 and WAV files are properly unlinked/deleted (no orphaned media files left behind). (`328a3b48f`)
+- [ ] **VACUUM INTO remote sync** — Enable remote sync. Verify that database is properly vacuumed using VACUUM INTO snapshots to prevent corruption. (`5d0b07db1`)
 
 ### 25. Feedback & Support
 
@@ -892,28 +905,47 @@ commits: `c8769545b`, `4f522325b`, `54000c295`
 - [ ] **Bitrix24 CRM integration** — Verify that Bitrix24 CRM connection can be authorized and syncs data correctly. (`55026df56`)
 - [ ] **OAuth auto-refresh** — Verify that expired OAuth tokens for generic proxy connections (like Google, Bitrix24) are automatically refreshed. (`d7835eabb`)
 
-### 28. Deployment & Remote Management
+### 28. Meeting Notes & Sidebar
+
+commits: `205bf128f`, `08898d016`
+
+- [ ] **Meeting notes sidebar expansion during focused meeting** — While a meeting is focused (camera on, active), expand the meeting notes sidebar. Verify sidebar stays open and shows notes without collapsing. (`205bf128f`)
+- [ ] **Meeting notes frame images display correctly** — Open a meeting with screen sharing. Verify that captured frames/images are rendered correctly in meeting notes (no broken image icons or blank spaces). (`08898d016`)
+- [ ] **Meeting notes scrubber ends correctly** — In meeting notes scrubber, scrub to the end of meeting. Verify playback position reaches the actual meeting end time (no premature cutoff). (`08898d016`)
+
+### 29. Deployment & Remote Management
 
 commits: `c6a73b17e`, `945b687ec`
 
 - [ ] **Deploy to offline devices** — Use chat prompt to deploy screenpipe to an offline device. Verify it handles the "Screen Sharing" permission dialog by opening it on the target machine. (`c6a73b17e`, `945b687ec`)
 
-### 29. Browser Extension
+### 30. Browser Extension
 
 - [ ] **Extension popup** — Open the browser extension popup. Verify connection status is displayed correctly. (`be7c9e8b5`)
 
 
 - [ ] **Browser extension token auth** — Open the browser extension options page. Verify that token-based authentication works and that it can successfully connect to the Screenpipe API. (`be14de544`)
 
-### 30. CLI
+### 31. Browser Control API
+
+commits: `27e7a28c9`, `4ce98c36e`
+
+- [ ] **Browser /navigate endpoint** — Use the API endpoint `/navigate` to navigate to a URL in the browser. Verify that the browser opens the specified URL. (`27e7a28c9`)
+- [ ] **Browser /snapshot endpoint** — Use the API endpoint `/snapshot` to capture a browser screenshot. Verify that an accurate snapshot is returned. (`27e7a28c9`)
+- [ ] **Safari UA spoof for x.com** — Open x.com in Safari with Screenpipe running. Verify that the Safari User-Agent is properly spoofed to access x.com (no "Safari not supported" errors). (`4ce98c36e`)
+
+### 33. CLI
 
 - [ ] **CLI logout** — Run `screenpipe logout`. Verify it clears local auth tokens. (`793c3d6e9`)
 - [ ] **CLI sync remote** — Verify `screenpipe sync remote` command and its configuration. (`f46e85cb1`)
 
-### 31. Chat (Pi)
+### 34. Chat (Pi)
 
 - [ ] **Parallel chats** — Verify that multiple chat sessions can run in parallel and their background streams remain visible when switching. (`c9d64ce23`)
 - [ ] **Chat sidebar navigation** — Verify that the chat sidebar (pinned, recents, live status) works correctly and replaces the Home view for "New chat". (`ec5e80992`, `28c4b1ac5`)
 - [ ] **Persistent background chats** — Verify that chats continue to stream in the background even when navigating away from the chat view. (`0060ae9e5`, `ec5e80992`)
 - [ ] **Inline history in overlay** — Verify that inline history is restored in the overlay window. (`15b419ec7`)
 - [ ] **Notification URL actions** — Open a URL action from a native macOS notification when the overlay is not mounted. (`7fdcd2054`)
+- [ ] **Persist assistant message during streaming** — Send a chat query. Verify that the assistant's message is persisted to the database even as it streams (no data loss if interrupted). (`35a8cfc09`)
+- [ ] **De-emphasize queued messages** — While a message is queued/processing, verify it appears grayed out or with lower visual emphasis. (`2fff98866`)
+- [ ] **Collapse first thought by default** — In chat, the initial "thinking" section is collapsed by default. User can expand it to see full reasoning. (`2fff98866`)
