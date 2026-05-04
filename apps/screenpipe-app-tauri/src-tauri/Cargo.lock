@@ -9726,7 +9726,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-app"
-version = "2.4.132"
+version = "2.4.133"
 dependencies = [
  "anyhow",
  "arboard",
@@ -10047,6 +10047,7 @@ dependencies = [
  "screenpipe-core",
  "screenpipe-db",
  "screenpipe-events",
+ "screenpipe-redact",
  "screenpipe-screen",
  "screenpipe-secrets",
  "screenpipe-vault",
@@ -10084,6 +10085,30 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-stream",
+ "tracing",
+]
+
+[[package]]
+name = "screenpipe-redact"
+version = "0.3.307"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "dirs 5.0.1",
+ "futures",
+ "image 0.25.10",
+ "moka",
+ "once_cell",
+ "regex",
+ "reqwest 0.12.12",
+ "screenpipe-core",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "thiserror 1.0.69",
+ "tokio",
  "tracing",
 ]
 

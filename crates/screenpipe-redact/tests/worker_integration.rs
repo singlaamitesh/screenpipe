@@ -46,12 +46,14 @@ async fn setup_db() -> sqlx::SqlitePool {
             redacted_at INTEGER,
             redaction_version INTEGER
         );
-        CREATE TABLE accessibility (
+        -- Accessibility text moved to `frames.accessibility_text` after
+        -- the 2026-03-12 consolidation; redaction columns prefixed.
+        CREATE TABLE frames (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            text_content TEXT NOT NULL,
-            text_redacted TEXT,
-            redacted_at INTEGER,
-            redaction_version INTEGER
+            accessibility_text TEXT,
+            accessibility_text_redacted TEXT,
+            accessibility_redacted_at INTEGER,
+            accessibility_redaction_version INTEGER
         );
         CREATE TABLE ui_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -81,7 +83,7 @@ async fn seed(pool: &sqlx::SqlitePool) {
     sqlx::query("INSERT INTO audio_transcriptions (transcription) VALUES ('the api key is sk-proj-AbCdEf123456GhIjKlMnOp tomorrow')")
         .execute(pool).await.unwrap();
     sqlx::query(
-        "INSERT INTO accessibility (text_content) VALUES ('AXButton[Send to bob@example.com]')",
+        "INSERT INTO frames (accessibility_text) VALUES ('AXButton[Send to bob@example.com]')",
     )
     .execute(pool)
     .await
@@ -136,10 +138,12 @@ async fn worker_redacts_all_five_targets() {
             .map(|f| format!(" AND {}", f))
             .unwrap_or_default();
         let q = format!(
-            "SELECT text_redacted, redaction_version FROM {} \
-             WHERE text_redacted IS NOT NULL{}",
-            target.table(),
-            extra
+            "SELECT {redacted} AS r, {version} AS v FROM {tbl} \
+             WHERE {redacted} IS NOT NULL{extra}",
+            redacted = target.redacted_col(),
+            version = target.redaction_version_col(),
+            tbl = target.table(),
+            extra = extra
         );
         let rows = sqlx::query(&q).fetch_all(&pool).await.unwrap();
         assert!(

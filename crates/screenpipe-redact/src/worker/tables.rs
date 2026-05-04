@@ -5,27 +5,30 @@
 //! Per-table queries used by the reconciliation worker.
 //!
 //! After the `20260501_*` migration, each text-bearing table grows
-//! three columns:
-//!
-//! - `text_redacted     TEXT NULL` — written by the worker
-//! - `redacted_at       INTEGER NULL` — unix-seconds the redaction landed
-//! - `redaction_version INTEGER NULL` — name+version of the redactor
+//! the redacted-tracking columns. Most use the bare convention
+//! (`text_redacted` / `redacted_at` / `redaction_version`); the
+//! accessibility surface, which now lives on `frames`, uses prefixed
+//! names (`accessibility_text_redacted` / `accessibility_redacted_at`
+//! / `accessibility_redaction_version`) — see
+//! [`TargetTable::redacted_col`] for the per-variant resolver.
 //!
 //! ## What we redact
 //!
-//! Four targets, distinct enough that we treat them as separate
-//! [`TargetTable`] variants:
+//! Four logical surfaces, five [`TargetTable`] variants (UI events
+//! split into keyboard vs clipboard):
 //!
 //! 1. **`ocr_text`** — OCR'd screen text. Source column `text`.
 //! 2. **`audio_transcriptions`** — speech-to-text output. Source column
 //!    `transcription`.
-//! 3. **`accessibility`** — accessibility-tree dumps from macOS / Windows
-//!    AX APIs. Source column **`text_content`** (NOT `text_output` —
-//!    that was a bug in an earlier draft).
+//! 3. **`frames.accessibility_text`** — accessibility-tree text. The
+//!    standalone `accessibility` table was consolidated into `frames`
+//!    by `20260312000001_drop_dead_fts_tables.sql`; we redact on the
+//!    new home using prefixed columns so the shared `frames` table
+//!    can carry per-source redaction state independently.
 //! 4. **`ui_events`** — user input events. The same table holds both
 //!    typed/keystroke text (`event_type IN ('text', 'key')`) and
 //!    clipboard contents (`event_type = 'clipboard'`). Source column
-//!    `text_content`. We split into two variants so the row-fetch SQL
+//!    `text_content`. Split into two variants so the row-fetch SQL
 //!    can filter by `event_type` — both go through the same
 //!    redactor but they're different deployment surfaces (a user
 //!    might want clipboard always-redacted but typed text raw, for
@@ -33,9 +36,10 @@
 //!
 //! ## "Needs redaction" predicate
 //!
-//! `text_redacted IS NULL OR redaction_version < {current}`. That makes
+//! `<redacted_col> IS NULL OR <version_col> < {current}`. That makes
 //! re-redaction free: when the redactor's version bumps the worker
-//! sweeps over old rows automatically.
+//! sweeps over old rows automatically. The exact column names depend
+//! on the variant — see the per-variant getters.
 
 use sqlx::{Row, SqlitePool};
 
@@ -46,7 +50,13 @@ pub enum TargetTable {
     Ocr,
     /// Speech-to-text (`audio_transcriptions.transcription`).
     AudioTranscription,
-    /// Accessibility-tree dumps (`accessibility.text_content`).
+    /// Accessibility-tree text — lives on `frames.accessibility_text`
+    /// since the `accessibility` table was consolidated into `frames`
+    /// by `20260312000001_drop_dead_fts_tables.sql`. The redaction
+    /// columns are prefixed (`accessibility_text_redacted`,
+    /// `accessibility_redacted_at`, `accessibility_redaction_version`)
+    /// so they don't collide with future per-frame redaction state on
+    /// other source columns.
     Accessibility,
     /// Typed text + keystrokes captured via UI events
     /// (`ui_events.text_content` filtered to `event_type IN ('text','key')`).
@@ -77,7 +87,9 @@ impl TargetTable {
         match self {
             Self::Ocr => "ocr_text",
             Self::AudioTranscription => "audio_transcriptions",
-            Self::Accessibility => "accessibility",
+            // accessibility_text lives on frames after the 2026-03-12
+            // consolidation; see the variant docs above.
+            Self::Accessibility => "frames",
             Self::UiEventsKeyboard | Self::UiEventsClipboard => "ui_events",
         }
     }
@@ -87,12 +99,44 @@ impl TargetTable {
         match self {
             Self::Ocr => "text",
             Self::AudioTranscription => "transcription",
-            Self::Accessibility => "text_content",
+            Self::Accessibility => "accessibility_text",
             Self::UiEventsKeyboard | Self::UiEventsClipboard => "text_content",
         }
     }
 
-    /// Primary key. `ocr_text` is keyed by `frame_id`; the rest have
+    /// Column the worker writes the redacted text into.
+    /// Most tables use the bare `text_redacted` convention; the
+    /// frames-hosted accessibility variant prefixes its columns to
+    /// avoid colliding with potential future per-frame redaction
+    /// state on other source columns (e.g. `frames.full_text`).
+    pub fn redacted_col(&self) -> &'static str {
+        match self {
+            Self::Accessibility => "accessibility_text_redacted",
+            _ => "text_redacted",
+        }
+    }
+
+    /// Column holding the unix-seconds timestamp of the last redaction.
+    pub fn redacted_at_col(&self) -> &'static str {
+        match self {
+            Self::Accessibility => "accessibility_redacted_at",
+            _ => "redacted_at",
+        }
+    }
+
+    /// Column holding the redactor's `version()` at write time. The
+    /// "needs redaction" predicate compares this to the running
+    /// redactor's current version so a model bump auto-queues every
+    /// existing row.
+    pub fn redaction_version_col(&self) -> &'static str {
+        match self {
+            Self::Accessibility => "accessibility_redaction_version",
+            _ => "redaction_version",
+        }
+    }
+
+    /// Primary key. `ocr_text` is keyed by `frame_id`; everything
+    /// else (including `frames` for the accessibility variant) uses
     /// an autoincrement `id`.
     pub fn pk_col(&self) -> &'static str {
         match self {
@@ -101,8 +145,9 @@ impl TargetTable {
         }
     }
 
-    /// Extra `WHERE`-clause filter beyond `text_redacted IS NULL`. Used
-    /// to slice the `ui_events` table by `event_type`.
+    /// Extra `WHERE`-clause filter beyond the redacted-NULL predicate.
+    /// Used to slice the `ui_events` table by `event_type` and to skip
+    /// frames whose accessibility_text is NULL/empty.
     pub fn extra_filter(&self) -> Option<&'static str> {
         match self {
             Self::UiEventsKeyboard => Some("event_type IN ('text','key')"),
@@ -116,7 +161,7 @@ impl TargetTable {
         match self {
             Self::Ocr => "ocr_text",
             Self::AudioTranscription => "audio_transcriptions",
-            Self::Accessibility => "accessibility",
+            Self::Accessibility => "frames:accessibility_text",
             Self::UiEventsKeyboard => "ui_events:keyboard",
             Self::UiEventsClipboard => "ui_events:clipboard",
         }
@@ -139,13 +184,14 @@ pub async fn fetch_unredacted(
         "SELECT {pk} AS id, {src} AS text \
          FROM {tbl} \
          WHERE {src} IS NOT NULL AND {src} != '' \
-           AND text_redacted IS NULL\
+           AND {redacted} IS NULL\
            {extra} \
          ORDER BY {pk} DESC \
          LIMIT ?",
         pk = table.pk_col(),
         src = table.source_col(),
         tbl = table.table(),
+        redacted = table.redacted_col(),
         extra = extra,
     );
 
@@ -184,12 +230,15 @@ pub async fn write_redacted(
         let q = format!(
             "UPDATE {tbl} SET \
                 {src} = ?, \
-                text_redacted = ?, \
-                redacted_at = strftime('%s', 'now'), \
-                redaction_version = ? \
+                {redacted_col} = ?, \
+                {redacted_at_col} = strftime('%s', 'now'), \
+                {version_col} = ? \
              WHERE {pk} = ?",
             tbl = table.table(),
             src = table.source_col(),
+            redacted_col = table.redacted_col(),
+            redacted_at_col = table.redacted_at_col(),
+            version_col = table.redaction_version_col(),
             pk = table.pk_col(),
         );
         sqlx::query(&q)
@@ -202,11 +251,14 @@ pub async fn write_redacted(
     } else {
         let q = format!(
             "UPDATE {tbl} SET \
-                text_redacted = ?, \
-                redacted_at = strftime('%s', 'now'), \
-                redaction_version = ? \
+                {redacted_col} = ?, \
+                {redacted_at_col} = strftime('%s', 'now'), \
+                {version_col} = ? \
              WHERE {pk} = ?",
             tbl = table.table(),
+            redacted_col = table.redacted_col(),
+            redacted_at_col = table.redacted_at_col(),
+            version_col = table.redaction_version_col(),
             pk = table.pk_col(),
         );
         sqlx::query(&q)
@@ -243,12 +295,16 @@ mod tests {
                 redacted_at INTEGER,
                 redaction_version INTEGER
             );
-            CREATE TABLE accessibility (
+            -- Accessibility text now lives on `frames` (the standalone
+            -- `accessibility` table was dropped on 2026-03-12). The
+            -- redaction columns are prefixed to avoid colliding with
+            -- per-frame state on other source columns.
+            CREATE TABLE frames (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                text_content TEXT NOT NULL,
-                text_redacted TEXT,
-                redacted_at INTEGER,
-                redaction_version INTEGER
+                accessibility_text TEXT,
+                accessibility_text_redacted TEXT,
+                accessibility_redacted_at INTEGER,
+                accessibility_redaction_version INTEGER
             );
             CREATE TABLE ui_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -396,16 +452,43 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn accessibility_uses_text_content_column() {
+    async fn accessibility_reads_from_frames_accessibility_text() {
         let pool = setup().await;
-        sqlx::query("INSERT INTO accessibility (text_content) VALUES ('AXButton[Send]')")
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO frames (accessibility_text) VALUES ('AXButton[Send to alice@x.io]')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         let rows = fetch_unredacted(&pool, TargetTable::Accessibility, 10)
             .await
             .unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].text, "AXButton[Send]");
+        assert_eq!(rows[0].text, "AXButton[Send to alice@x.io]");
+    }
+
+    #[tokio::test]
+    async fn accessibility_writes_to_prefixed_columns() {
+        let pool = setup().await;
+        sqlx::query("INSERT INTO frames (accessibility_text) VALUES ('Marcus Chen')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        write_redacted(&pool, TargetTable::Accessibility, 1, "[PERSON]", 7, false)
+            .await
+            .unwrap();
+        let row = sqlx::query(
+            "SELECT accessibility_text, accessibility_text_redacted, accessibility_redaction_version
+             FROM frames WHERE id = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let raw: String = row.get(0);
+        let red: String = row.get(1);
+        let v: i64 = row.get(2);
+        assert_eq!(raw, "Marcus Chen");
+        assert_eq!(red, "[PERSON]");
+        assert_eq!(v, 7);
     }
 }
