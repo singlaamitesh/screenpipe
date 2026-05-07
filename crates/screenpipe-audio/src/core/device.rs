@@ -344,6 +344,35 @@ pub async fn get_cpal_device_and_config(
     // Get the highest quality configuration based on device type
     let config = if is_output_device && !is_display {
         let configs: Vec<_> = cpal_audio_device.supported_output_configs()?.collect();
+        
+        // Log default output config for reference
+        if let Ok(default_cfg) = cpal_audio_device.default_output_config() {
+            tracing::debug!(
+                "device='{}' default_output_config: channels={} rate={}Hz",
+                device_name,
+                default_cfg.channels(),
+                default_cfg.sample_rate()
+            );
+        }
+        
+        // Diagnostic logging: enumerate all supported configs for debugging
+        // (e.g., Bluetooth devices exposing multiple A2DP+HFP configs)
+        tracing::debug!(
+            "device='{}' supported_output_configs: count={}",
+            device_name,
+            configs.len()
+        );
+        for (idx, cfg) in configs.iter().enumerate() {
+            tracing::debug!(
+                "  [{}] channels={} min_rate={}Hz max_rate={}Hz buffer_size={:?}",
+                idx,
+                cfg.channels(),
+                cfg.min_sample_rate(),
+                cfg.max_sample_rate(),
+                cfg.buffer_size()
+            );
+        }
+        
         let best_config = configs
             .iter()
             .max_by(|a, b| {
@@ -353,9 +382,44 @@ pub async fn get_cpal_device_and_config(
             })
             .ok_or_else(|| anyhow!("No supported output configurations found"))?;
 
+        tracing::info!(
+            "device='{}' selected_output_config: channels={} max_rate={}Hz",
+            device_name,
+            best_config.channels(),
+            best_config.max_sample_rate()
+        );
+
         (*best_config).with_sample_rate(best_config.max_sample_rate())
     } else {
         let configs: Vec<_> = cpal_audio_device.supported_input_configs()?.collect();
+        
+        // Log default input config for reference
+        if let Ok(default_cfg) = cpal_audio_device.default_input_config() {
+            tracing::debug!(
+                "device='{}' default_input_config: channels={} rate={}Hz",
+                device_name,
+                default_cfg.channels(),
+                default_cfg.sample_rate()
+            );
+        }
+        
+        // Diagnostic logging: enumerate all supported configs for debugging
+        tracing::debug!(
+            "device='{}' supported_input_configs: count={}",
+            device_name,
+            configs.len()
+        );
+        for (idx, cfg) in configs.iter().enumerate() {
+            tracing::debug!(
+                "  [{}] channels={} min_rate={}Hz max_rate={}Hz buffer_size={:?}",
+                idx,
+                cfg.channels(),
+                cfg.min_sample_rate(),
+                cfg.max_sample_rate(),
+                cfg.buffer_size()
+            );
+        }
+        
         let best_config = configs
             .iter()
             .max_by(|a, b| {
@@ -364,6 +428,13 @@ pub async fn get_cpal_device_and_config(
                     .then(a.channels().cmp(&b.channels()))
             })
             .ok_or_else(|| anyhow!("No supported input configurations found"))?;
+
+        tracing::info!(
+            "device='{}' selected_input_config: channels={} max_rate={}Hz",
+            device_name,
+            best_config.channels(),
+            best_config.max_sample_rate()
+        );
 
         (*best_config).with_sample_rate(best_config.max_sample_rate())
     };
@@ -780,5 +851,54 @@ mod windows_com_audio {
         }
 
         Ok(Some(name))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_device_type_conversion() {
+        // Test DeviceType <-> screenpipe_db::DeviceType conversions work
+        let device_type = DeviceType::Input;
+        let db_type: screenpipe_db::DeviceType = device_type.clone().into();
+        let back: DeviceType = db_type.into();
+        assert_eq!(device_type, back);
+
+        let device_type = DeviceType::Output;
+        let db_type: screenpipe_db::DeviceType = device_type.clone().into();
+        let back: DeviceType = db_type.into();
+        assert_eq!(device_type, back);
+    }
+
+    #[test]
+    fn test_audio_device_creation() {
+        // Test that AudioDevice can be created and cloned
+        let device = AudioDevice::new("Test Device".to_string(), DeviceType::Input);
+        assert_eq!(device.name, "Test Device");
+        assert_eq!(device.device_type, DeviceType::Input);
+
+        let device_clone = device.clone();
+        assert_eq!(device_clone.name, device.name);
+        assert_eq!(device_clone.device_type, device.device_type);
+    }
+
+    #[test]
+    fn test_device_control_creation() {
+        // Test DeviceControl can be created with different states
+        let control = DeviceControl {
+            is_running: true,
+            is_paused: false,
+        };
+        assert!(control.is_running);
+        assert!(!control.is_paused);
+
+        let control2 = DeviceControl {
+            is_running: false,
+            is_paused: true,
+        };
+        assert!(!control2.is_running);
+        assert!(control2.is_paused);
     }
 }
