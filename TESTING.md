@@ -113,6 +113,8 @@ commits: `28e5c247`
 - [ ] **bluetooth device connect/disconnect** — AirPods connect mid-recording. audio continues without gap.
 - [ ] **no audio device available** — unplug all audio. app continues (vision still works). log shows warning, not crash.
 - [ ] **audio stream timeout recovery** — if audio stream times out (30s no data), it should reconnect automatically.
+- [ ] **audio stream 3s stop timeout** — When stopping audio recording, verify that stream cleanup has a 3-second timeout to prevent hangs and gracefully recover if a stream doesn't respond to stop requests. (`e8f2c5d3b`)
+- [ ] **ObjC panic catching in speaker init** — During speaker model initialization, if an ORT (ONNX Runtime) panic occurs, verify that it's caught and doesn't kill the tokio worker thread. The app should recover gracefully. (`14a441f2b`)
 - [ ] **multiple audio devices simultaneously** — input (mic) + output (speakers) both recording. both show in device list.
 - [ ] **disable audio setting** — toggling "disable audio" stops all audio recording. re-enabling restarts it.
 - [ ] **Metal GPU for whisper** — transcription uses GPU acceleration on macOS (`f882caef`). verify with Activity Monitor GPU tab.
@@ -318,7 +320,7 @@ commits: `eea0c865`, `cc09de61`, `e61501da`, `d25191d7`, `60096fb9`
 
 ### 10. AI presets & settings
 
-commits: `8a5f51dd`, `0b0d8090`, `7e58564e`, `2522a7e2`, `f3e55dbc`, `79f2913f`
+commits: `8a5f51dd`, `0b0d8090`, `7e58564e`, `2522a7e2`, `f3e55dbc`, `79f2913f`, `7317f82d7`
 
 - [ ] **Ollama not running** — creating an Ollama preset shows free-text input fields (not stuck loading). user can type model name manually (`8a5f51dd`).
 - [ ] **custom provider preset** — user can add a custom API endpoint. model name is free-text input with optional autocomplete.
@@ -340,6 +342,9 @@ commits: `8a5f51dd`, `0b0d8090`, `7e58564e`, `2522a7e2`, `f3e55dbc`, `79f2913f`
 - [ ] **privacy settings reordering** — Verify that the Security section appears first in the Privacy settings tab. (`4718785b6`)
 - [ ] **password field filtering** — Verify that password fields are skipped in the accessibility tree and not stored as OCR/text. (`8159641f5`, `d39e42e5b`)
 - [ ] **browser extension popup filtering** — Verify that browser extension popups (like Bitwarden) are filtered and not captured in the accessibility tree or as black frames. (`52d20987a`, `449ae7a68`, `931db40b6`)
+- [ ] **Hide Thinking Blocks toggle** — In Settings → Display, verify the "Hide Thinking Blocks" toggle exists and defaults to ON. When enabled, thinking blocks in AI responses are hidden. When disabled, thinking blocks are visible. (`7317f82d7`)
+- [ ] **AI model picker search and close behavior** — In Settings → AI → Model Picker, type in the search field to filter models. Verify search works correctly and that closing the picker closes properly without getting stuck. (`44fe741ee`)
+- [ ] **Settings loss recovery on app update** — Update the app to a new version while running. Verify that settings are not lost during the update process thanks to 4-layer recovery mechanism. Settings should be preserved after restart. (`5f7408bd6`)
 
 commits: `8a5f51dd`, `0b0d8090`
 
@@ -696,8 +701,14 @@ commits: `fa887407`, `815f52e6`, `60840155`, `e66c3ff8`, `c905ffbf`, `01147096`,
 - [ ] **Mermaid diagram XSS sanitization** — Verify that mermaid diagrams in the UI are correctly sanitized to prevent XSS attacks. (`3405e9793`)
 - [ ] **Per-machine pipe favorites (stars)** — Toggle the star icon for a pipe. Verify that favorites are persisted per-machine and that the filter chip correctly shows starred pipes first. (`e1a18adb9`, `0a2c1abb7`)
 - [ ] **Connected integrations @mentions in chat** — Open the filter popover in chat. Verify that connected integrations (like Notion, Slack, Google Docs) appear as @mentions for easy filtering. (`1c0c95b20`)
+- [ ] **Pipes dropdown lag fix** — Open the Pipes tab and interact with the pipe dropdown menu. Verify there is no noticeable lag or delay when opening/closing the dropdown. (`c1e8b7f9e`)
+- [ ] **Stuck skeleton on Pipes page** — Load the Pipes page. Verify that the skeleton loader disappears cleanly when data loads and doesn't get stuck. (`c1e8b7f9e`)
+- [ ] **Offline Pipes UX** — With network disabled, open the Pipes tab. Verify that the UI gracefully shows cached data or a helpful message, not a frozen skeleton. (`c1e8b7f9e`)
+- [ ] **Discover Pipes feedback** — While browsing the Discover tab in Pipes, provide feedback on a pipe. Verify the feedback is submitted and a confirmation appears. (`c1e8b7f9e`)
+- [ ] **Chat picker in sidebar** — In the Chat view, verify that a chat picker/selector appears in the sidebar for switching between open chats. (`f4a32b8dc`)
+- [ ] **Message editing preserves history** — Edit a message in chat. Verify that the edit history is preserved and accessible. (`f4a32b8dc`)
 
-commits: `fa887407`, `815f52e6`, `60840155`, `e66c3ff8`, `c905ffbf`, `01147096`, `5908d7f4`, `46422869`, `4f43da70`, `71a1a537`, `6abaaa36`
+commits: `fa887407`, `815f52e6`, `60840155`, `e66c3ff8`, `c905ffbf`, `01147096`, `5908d7f4`, `46422869`, `4f43da70`, `71a1a537`, `6abaaa36`, `c1e8b7f9e`, `f4a32b8dc`
 
 - [ ] **Pi process stability** — After app launch, `ps aux | grep pi` should show a single, stable `pi` process that doesn't restart or get killed.
 - [ ] **Pi readiness handshake** — First chat interaction with Pi should be fast (<2s for readiness).
@@ -754,9 +765,10 @@ commits: `274a968af`, `dc575e48e`, `81aabbf18`, `d5e071854`, `db08f8c06`, `f4225
 ### 21. Privacy & Incognito Detection
 
 - [ ] **PII Filter** — Toggle the PII filter in chat or search. Verify that sensitive information is filtered using Tinfoil. (`fec0f1023`)
+- [ ] **Local OPF v3 text redactor** — Enable the local OPF v3 text redactor in Privacy settings. Verify that PII in transcriptions and OCR text is automatically redacted with minimal latency. (`e7f4b2a8d`)
+- [ ] **AI PII removal** — In Settings → Privacy, verify that "AI PII Removal" option works correctly. When enabled, verify that the LLM removes PII from visible text without affecting functionality. (`e7f4b2a8d`)
 
-
-commits: `ad431b513`, `d9722bccc`, `4df21e83d`
+commits: `ad431b513`, `d9722bccc`, `4df21e83d`, `e7f4b2a8d`
 
 - [ ] **Incognito window detection** — Verify that private browsing/incognito windows are correctly detected for major browsers (Chrome, Safari, Firefox, etc.). (`ad431b513`)
 - [ ] **Ignore incognito toggle** — Verify that the "Ignore Incognito Windows" toggle in settings correctly prevents recording of private windows. (`d9722bccc`)
@@ -771,8 +783,12 @@ commits: `fc830b43`
 
 ### 23. GPU & Performance Telemetry
 
+commits: `0d42ea221`, `0718c2e03`, `f0adcddd0`, `d7c3a8f2e`
+
 - [ ] **GPU error handling & telemetry** — Verify that GPU errors are handled gracefully and CPU/GPU telemetry is correctly reported in logs. (`0d42ea221`)
 - [ ] **Clipboard thread leak** — Verify that long-running sessions do not exhibit gradual input lag or memory growth due to clipboard thread leaks. (`0718c2e03`, `f0adcddd0`)
+- [ ] **NSPasteboard main thread reads** — Copy various items to clipboard while Screenpipe is recording. Verify that NSPasteboard reads happen on the main thread without blocking other operations. No UI freezing should occur. (`d4f5a9c2e`)
+- [ ] **WindowServer/rAF CPU poll fix** — After app startup, verify that CPU usage is normal (not spiking to 100%). Check Activity Monitor and verify that the WindowServer/RAF polling issue has been resolved. Long-running sessions should maintain stable CPU usage. (`d7c3a8f2e`)
 
 ### 24. Data Management
 
@@ -905,12 +921,18 @@ commits: `c6a73b17e`, `945b687ec`
 
 - [ ] **Browser extension token auth** — Open the browser extension options page. Verify that token-based authentication works and that it can successfully connect to the Screenpipe API. (`be14de544`)
 
-### 30. CLI
+### 30. Owned Browser
+
+- [ ] **Cookie inheritance from system browser** — Configure and launch the owned browser. Verify that cookies from the system browser are correctly inherited and available in the owned browser. (`a5b2f8c9d`)
+- [ ] **Domain-bound cookie prefix stripping** — When using domain-bound cookies, verify that the `__Host-` or `__Secure-` prefixes are correctly stripped if the cookie doesn't meet the domain-binding requirements. (`a5b2f8c9d`)
+
+### 31. CLI
 
 - [ ] **CLI logout** — Run `screenpipe logout`. Verify it clears local auth tokens. (`793c3d6e9`)
 - [ ] **CLI sync remote** — Verify `screenpipe sync remote` command and its configuration. (`f46e85cb1`)
+- [ ] **PID file cleanup on exit** — Run screenpipe, then kill it forcefully. Verify that the PID file (`~/.screenpipe/screenpipe.pid`) is cleaned up properly on the next startup. (`b8d3e7f2c`)
 
-### 31. Chat (Pi)
+### 32. Chat (Pi)
 
 - [ ] **Parallel chats** — Verify that multiple chat sessions can run in parallel and their background streams remain visible when switching. (`c9d64ce23`)
 - [ ] **Chat sidebar navigation** — Verify that the chat sidebar (pinned, recents, live status) works correctly and replaces the Home view for "New chat". (`ec5e80992`, `28c4b1ac5`)
