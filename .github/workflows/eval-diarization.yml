@@ -318,7 +318,7 @@ jobs:
             for f in $(ls /tmp/eval-results/*.json | sort); do
               stem=$(basename "$f" .json)
               case "$stem" in
-                interrupted_meeting|long_silence_day|screenpipe_*|transcription) ;;
+                interrupted_meeting|long_silence_day|screenpipe_*|pipeline-replay|transcription) ;;
                 *) order+=("$stem") ;;
               esac
             done
@@ -326,7 +326,9 @@ jobs:
               f="/tmp/eval-results/${stem}.json"
               [ -f "$f" ] || continue
               jq -r --arg stem "$stem" '
-                def fmt3: . * 1000 | round / 1000 | tostring;
+                def fmt3:
+                  if . == null then "n/a"
+                  else (. * 1000 | round / 1000 | tostring) end;
                 def fmt_continuity:
                   if (. == null) or (isnan) then "n/a"
                   else (. * 1000 | round / 1000 | tostring) end;
