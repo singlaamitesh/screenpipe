@@ -413,6 +413,23 @@ async fn handle_deepgram_response(
 }
 
 fn parse_diarization_segments(result: &Value) -> Vec<TranscriptionDiarizationSegment> {
+    let word_segments = parse_word_diarization_segments(result);
+    if word_segments
+        .iter()
+        .any(|segment| segment.provider_speaker_label != "SPEAKER_UNKNOWN")
+    {
+        return word_segments;
+    }
+
+    let utterance_segments = parse_utterance_diarization_segments(result);
+    if !utterance_segments.is_empty() {
+        return utterance_segments;
+    }
+
+    word_segments
+}
+
+fn parse_word_diarization_segments(result: &Value) -> Vec<TranscriptionDiarizationSegment> {
     let words = match result["results"]["channels"][0]["alternatives"][0]["words"].as_array() {
         Some(words) => words,
         None => return Vec::new(),
@@ -475,6 +492,95 @@ fn parse_diarization_segments(result: &Value) -> Vec<TranscriptionDiarizationSeg
     segments
 }
 
+fn parse_utterance_diarization_segments(result: &Value) -> Vec<TranscriptionDiarizationSegment> {
+    let utterances = match result["results"]["utterances"].as_array() {
+        Some(utterances) => utterances,
+        None => return Vec::new(),
+    };
+
+    let mut segments: Vec<TranscriptionDiarizationSegment> = Vec::new();
+    for utterance in utterances {
+        let text = utterance
+            .get("transcript")
+            .and_then(Value::as_str)
+            .or_else(|| utterance.get("text").and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                utterance
+                    .get("words")
+                    .and_then(Value::as_array)
+                    .map(|words| {
+                        words
+                            .iter()
+                            .filter_map(|word| {
+                                word.get("punctuated_word")
+                                    .and_then(Value::as_str)
+                                    .or_else(|| word.get("word").and_then(Value::as_str))
+                            })
+                            .map(str::trim)
+                            .filter(|word| !word.is_empty())
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    })
+                    .unwrap_or_default()
+            });
+        if text.is_empty() {
+            continue;
+        }
+
+        let start = utterance
+            .get("start")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        let end = utterance
+            .get("end")
+            .and_then(Value::as_f64)
+            .unwrap_or(start);
+        if end <= start {
+            continue;
+        }
+
+        let speaker_label = utterance
+            .get("speaker")
+            .and_then(Value::as_i64)
+            .map(|speaker| format!("SPEAKER_{speaker:02}"))
+            .unwrap_or_else(|| "SPEAKER_UNKNOWN".to_string());
+        let confidence = utterance.get("confidence").and_then(Value::as_f64);
+
+        match segments.last_mut() {
+            Some(previous)
+                if previous.provider_speaker_label == speaker_label
+                    && start - previous.end_time <= 1.0 =>
+            {
+                if !previous.transcription.is_empty() {
+                    previous.transcription.push(' ');
+                }
+                previous.transcription.push_str(&text);
+                previous.end_time = end;
+                previous.confidence = match (previous.confidence, confidence) {
+                    (Some(a), Some(b)) => Some((a + b) / 2.0),
+                    (Some(a), None) => Some(a),
+                    (None, Some(b)) => Some(b),
+                    (None, None) => None,
+                };
+            }
+            _ => segments.push(TranscriptionDiarizationSegment {
+                provider_speaker_label: speaker_label,
+                speaker_id: None,
+                transcription: text,
+                start_time: start,
+                end_time: end,
+                confidence,
+                overlap: false,
+            }),
+        }
+    }
+
+    segments
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -492,6 +598,35 @@ mod tests {
                         ]
                     }]
                 }]
+            }
+        });
+
+        let turns = parse_diarization_segments(&value);
+
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].provider_speaker_label, "SPEAKER_00");
+        assert_eq!(turns[0].transcription, "Hello there.");
+        assert_eq!(turns[1].provider_speaker_label, "SPEAKER_01");
+        assert_eq!(turns[1].transcription, "Yes.");
+    }
+
+    #[test]
+    fn parses_deepgram_utterance_speakers_when_words_lack_speakers() {
+        let value = serde_json::json!({
+            "results": {
+                "channels": [{
+                    "alternatives": [{
+                        "words": [
+                            {"word": "hello", "punctuated_word": "Hello", "start": 0.0, "end": 0.2, "confidence": 0.9},
+                            {"word": "there", "punctuated_word": "there.", "start": 0.2, "end": 0.5, "confidence": 0.8},
+                            {"word": "yes", "punctuated_word": "Yes.", "start": 0.7, "end": 1.0, "confidence": 0.95}
+                        ]
+                    }]
+                }],
+                "utterances": [
+                    {"transcript": "Hello there.", "start": 0.0, "end": 0.5, "confidence": 0.85, "speaker": 0},
+                    {"transcript": "Yes.", "start": 0.7, "end": 1.0, "confidence": 0.95, "speaker": 1}
+                ]
             }
         });
 
