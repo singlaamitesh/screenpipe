@@ -1014,11 +1014,9 @@ async fn extract_speaker_id(
                         .or_default() += duration;
                 }
 
-                if !segment.embedding.is_empty() && duration > 0.0 {
-                    if duration > best_duration {
-                        best_duration = duration;
-                        best_embedding = Some(segment.embedding);
-                    }
+                if !segment.embedding.is_empty() && duration > 0.0 && duration > best_duration {
+                    best_duration = duration;
+                    best_embedding = Some(segment.embedding);
                 }
             }
             Err(e) => {

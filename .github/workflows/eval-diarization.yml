@@ -253,6 +253,23 @@ jobs:
       # blowing the timeout. The model itself is ~75 MB; download is
       # cached by SileroVad's HF helper alongside other screenpipe
       # models.
+      - name: Run pipeline replay matrix
+        run: |
+          /usr/bin/time -v ./target/release/screenpipe-eval-pipeline-replay \
+            --suite-dir /tmp/screenpipe-shaped \
+            --engines parakeet-local,whisper-local \
+            --modes background,live \
+            --devices input,output \
+            --deepgram off \
+            --out /tmp/eval-results/pipeline-replay.json \
+            2> /tmp/eval-results/pipeline-replay.stderr || {
+              echo "::error::pipeline replay failed"
+              cat /tmp/eval-results/pipeline-replay.stderr
+              [ -f /tmp/eval-results/pipeline-replay.json ] && cat /tmp/eval-results/pipeline-replay.json
+              exit 1
+            }
+          jq '.summary' /tmp/eval-results/pipeline-replay.json
+
       - name: Run transcription eval
         run: |
           /usr/bin/time -v ./target/release/screenpipe-eval-transcription \
@@ -326,6 +343,40 @@ jobs:
             echo
             echo "<sub>DER, VAD FA, VAD FN, boundary err: lower is better. Continuity: higher is better, 1.0 = same hyp cluster across all silence gaps. Composed workday rows and \`screenpipe_*\` rows exercise screenpipe-shaped usage: meetings, background gaps, backchannels, echo leakage, and crosstalk. Raw VoxConverse rows score broadcast-quality stems for comparison. See \`crates/screenpipe-audio-eval/evals/README.md\` for methodology.</sub>"
             echo
+            if [ -f /tmp/eval-results/pipeline-replay.json ]; then
+              echo "## Pipeline replay matrix"
+              echo
+              echo "Source: generated \`screenpipe_*\` fixtures materialized into temp screenpipe SQLite DBs, then read back through \`search_audio\`. This catches storage/search regressions that pure DER scoring misses."
+              echo
+              echo "| scenarios | passed | failed | skipped | avg background DER | avg background speaker err | Deepgram |"
+              echo "|---:|---:|---:|---:|---:|---:|---|"
+              jq -r '
+                def fmt:
+                  if . == null then "n/a"
+                  else (. * 1000 | round / 1000 | tostring) end;
+                .summary |
+                "| " + (.scenario_count | tostring) +
+                " | " + (.passed | tostring) +
+                " | " + (.failed | tostring) +
+                " | " + (.skipped | tostring) +
+                " | " + (.avg_background_der | fmt) +
+                " | " + (.avg_background_speaker_error | fmt) +
+                " | " + (.deepgram_status // "not_requested") +
+                " |"
+              ' /tmp/eval-results/pipeline-replay.json
+              echo
+              failed=$(jq '[.scenarios[] | select(.status == "fail")] | length' /tmp/eval-results/pipeline-replay.json)
+              if [ "$failed" != "0" ]; then
+                echo "Failed scenarios:"
+                echo
+                jq -r '.scenarios[] | select(.status == "fail") |
+                  "- `" + .fixture + "` / `" + .engine + "` / `" + .mode + "` / `" + .device + "`: " + (.failure_reasons | join("; "))' \
+                  /tmp/eval-results/pipeline-replay.json
+                echo
+              fi
+              echo "<sub>The no-secret CI matrix runs local diarization under Parakeet/Whisper engine labels across live/background and mic/system device profiles. Real Deepgram/screenpipe-cloud smoke can be run locally with \`--deepgram required\` when credentials are present.</sub>"
+              echo
+            fi
             if [ -f /tmp/eval-results/transcription.json ]; then
               echo "## Transcription quality"
               echo

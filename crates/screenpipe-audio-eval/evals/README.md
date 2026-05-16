@@ -99,6 +99,53 @@ for wav in /tmp/screenpipe-speaker-suite/*.wav; do
 done
 ```
 
+## Pipeline replay matrix
+
+Pure DER scoring proves the diarization chain emitted reasonable turns, but it
+does not prove screenpipe stored and returned those turns correctly. The replay
+matrix materializes generated `screenpipe_*` fixtures into fresh temporary
+screenpipe SQLite DBs, then queries the same DB search surface used by
+`/search?content_type=audio`.
+
+```bash
+cargo run -p screenpipe-audio-eval --bin screenpipe-eval-pipeline-replay -- \
+  --suite-dir /tmp/screenpipe-speaker-suite \
+  --engines parakeet-local,whisper-local \
+  --modes background,live \
+  --devices input,output \
+  --deepgram off \
+  --out /tmp/screenpipe-speaker-suite/pipeline-replay.json
+```
+
+The no-secret matrix checks:
+
+- background/batch rows in `audio_transcriptions` plus `diarization_segments`
+- live meeting rows in `meeting_transcript_segments`
+- mic-like input and system-audio-like output device labels
+- Parakeet/Whisper local-engine labels that share the local diarization path
+- `search_audio` speaker labels, speaker source, speaker-name filtering, and
+  collapsed-speaker failures
+
+When a direct Deepgram key or screenpipe cloud token is available, run a paid
+provider smoke test explicitly:
+
+```bash
+DEEPGRAM_API_KEY="$DEEPGRAM_API_KEY" \
+cargo run -p screenpipe-audio-eval --bin screenpipe-eval-pipeline-replay -- \
+  --suite-dir /tmp/screenpipe-speaker-suite \
+  --engines parakeet-local \
+  --modes background \
+  --devices output \
+  --deepgram required \
+  --deepgram-fixture screenpipe_meeting_rapid_handoffs \
+  --out /tmp/screenpipe-speaker-suite/pipeline-replay-deepgram.json
+```
+
+For screenpipe cloud, set `CUSTOM_DEEPGRAM_API_TOKEN` and `DEEPGRAM_API_URL`
+instead of a direct Deepgram key. The smoke should fail if provider speaker
+labels collapse to `SPEAKER_UNKNOWN`, which is exactly the gateway regression
+this PR is meant to catch after deployment.
+
 These fixtures are synthetic, but the failure modes are screenpipe-specific:
 live meeting handoffs, background 24/7 silence, duplicated mic/system capture,
 and crosstalk. Use them as a regression suite before claiming speaker-ID
