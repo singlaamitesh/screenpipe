@@ -33,6 +33,31 @@ fn default_priority() -> u8 {
     2
 }
 
+// ─── String helpers ─────────────────────────────────────────────────────────
+
+/// Truncate a string to at most `max_chars` Unicode scalar values, appending
+/// "..." when truncation happens. This is char-aware (never panics on
+/// multi-byte UTF-8 chars like '…' or emoji) and replaces the historical
+/// `&s[..N]` byte-index slicing in this file that caused SCREENPIPE-APP-97
+/// (panic at suggestions.rs:354:44 on a 3-byte '…' at byte index 32).
+fn truncate_chars(s: &str, max_chars: usize) -> String {
+    if s.chars().count() > max_chars {
+        let mut out: String = s.chars().take(max_chars).collect();
+        out.push_str("...");
+        out
+    } else {
+        s.to_string()
+    }
+}
+
+/// Char-aware borrowed slice: returns a `&str` containing at most `max_bytes`
+/// bytes, snapped down to the nearest valid char boundary so we never split a
+/// multi-byte UTF-8 codepoint.
+fn safe_byte_prefix(s: &str, max_bytes: usize) -> &str {
+    let end = s.floor_char_boundary(s.len().min(max_bytes));
+    &s[..end]
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct CachedSuggestions {
@@ -618,13 +643,7 @@ fn browsing_suggestions(apps: &[AppActivity], windows: &[WindowActivity]) -> Vec
     let top_pages: Vec<String> = browser_windows
         .iter()
         .take(3)
-        .map(|w| {
-            if w.window_name.chars().count() > 35 {
-                format!("{}...", w.window_name.chars().take(32).collect::<String>())
-            } else {
-                w.window_name.clone()
-            }
-        })
+        .map(|w| truncate_chars(&w.window_name, 32))
         .collect();
 
     let mut suggestions = vec![Suggestion {
@@ -646,11 +665,7 @@ fn browsing_suggestions(apps: &[AppActivity], windows: &[WindowActivity]) -> Vec
     }];
 
     for w in &browser_windows {
-        let title = if w.window_name.chars().count() > 35 {
-            format!("{}...", w.window_name.chars().take(32).collect::<String>())
-        } else {
-            w.window_name.clone()
-        };
+        let title = truncate_chars(&w.window_name, 32);
         suggestions.push(Suggestion {
             text: format!("what was I reading on \"{}\"?", title),
             preview: Some(format!("{}min on this page", w.cnt / 60)),
@@ -702,12 +717,12 @@ fn meeting_suggestions(apps: &[AppActivity], windows: &[WindowActivity]) -> Vec<
 
     let preview = if meeting_mins > 0 {
         if let Some(title) = &meeting_title {
-            Some(format!("{}min — {}", meeting_mins, title))
+            format!("{}min in {} — \"{}\"", meeting_mins, meeting_name, title)
         } else {
-            Some(format!("{}min in {}", meeting_mins, meeting_name))
+            format!("{}min in {}", meeting_mins, meeting_name)
         }
     } else {
-        None
+        format!("in {}", meeting_name)
     };
 
     vec![
@@ -1037,11 +1052,7 @@ fn idle_suggestions(
             && !skip.contains(&w.app_name.to_lowercase().as_str())
     });
     if let Some(w) = interesting_window {
-        let title = if w.window_name.chars().count() > 35 {
-            format!("{}...", w.window_name.chars().take(32).collect::<String>())
-        } else {
-            w.window_name.clone()
-        };
+        let title = truncate_chars(&w.window_name, 32);
         suggestions.push(Suggestion {
             text: format!("summarize \"{}\"", title),
             preview: Some(format!("in {}", w.app_name)),
@@ -1353,12 +1364,7 @@ async fn build_activity_context(
     // 2. Window titles (~400 chars)
     parts.push("Windows:".to_string());
     for w in windows.iter().take(6) {
-        let title = if w.window_name.chars().count() > 50 {
-            let truncated: String = w.window_name.chars().take(47).collect();
-            format!("{}...", truncated)
-        } else {
-            w.window_name.clone()
-        };
+        let title = truncate_chars(&w.window_name, 47);
         parts.push(format!("  {} — {}", w.app_name, title));
     }
     parts.push(String::new());
@@ -1404,8 +1410,7 @@ async fn build_activity_context(
                 parts.push(line);
             }
             debug!(
-                "suggestions: using accessibility data ({} snippets)",
-                snippets.len()
+                let line = format!("  [{}] {}", s.app_name, safe_byte_prefix(&text, 150));
             );
         }
     } else {
@@ -1533,7 +1538,7 @@ async fn generate_ai_suggestions(
                 .unwrap_or("");
             debug!(
                 "suggestions AI response: {}",
-                &content[..content.floor_char_boundary(content.len().min(300))]
+                safe_byte_prefix(content, 300)
             );
             parse_ai_response(content)
         }
@@ -2018,7 +2023,7 @@ mod tests {
                 println!(
                     "    [{}] {}...",
                     a.app_name,
-                    &a.snippet[..a.snippet.floor_char_boundary(a.snippet.len().min(80))]
+                    safe_byte_prefix(&a.snippet, 80)
                 );
             }
         }
@@ -2029,16 +2034,14 @@ mod tests {
                 println!(
                     "    [{}] {}...",
                     speaker,
-                    &a.transcription[..a
-                        .transcription
-                        .floor_char_boundary(a.transcription.len().min(80))]
+                    safe_byte_prefix(&a.transcription, 80)
                 );
             }
         }
         if !ocr.is_empty() {
             println!("\n  ocr samples:");
             for s in ocr.iter().take(3) {
-                println!("    \"{}\"", &s[..s.floor_char_boundary(s.len().min(80))]);
+                println!("    \"{}\"", safe_byte_prefix(s, 80));
             }
         }
 
