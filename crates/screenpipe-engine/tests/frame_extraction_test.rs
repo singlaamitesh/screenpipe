@@ -4,12 +4,12 @@ use tempfile::TempDir;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
-/// Test that reproduces the "moov atom not found" error from Sentry
-/// Issue: SCREENPIPE-CLI-D, SCREENPIPE-CLI-X, SCREENPIPE-CLI-T
-///
-/// Root cause: User requests frame from video file that's still being written.
-/// MP4 files have the moov atom (index/metadata) at the END, so incomplete
-/// files cannot be read by ffmpeg.
+// Test that reproduces the "moov atom not found" error from Sentry
+// Issue: SCREENPIPE-CLI-D, SCREENPIPE-CLI-X, SCREENPIPE-CLI-T
+//
+// Root cause: User requests frame from video file that's still being written.
+// MP4 files have the moov atom (index/metadata) at the END, so incomplete
+// files cannot be read by ffmpeg.
 
 /// Helper to find ffmpeg path
 fn find_ffmpeg() -> String {
@@ -197,20 +197,22 @@ async fn test_fragmented_mp4_allows_extraction_during_write() {
         println!("Extraction during fragmented recording: {:?}", result);
 
         // With fragmented MP4, this SHOULD succeed!
-        if result.is_ok() {
-            println!("SUCCESS: Frame extracted during recording with fragmented MP4!");
-            assert!(
-                std::path::Path::new(frame_path_str).exists(),
-                "Frame file should exist"
-            );
-        } else {
-            // May still fail if not enough data written yet, but shouldn't be moov error
-            let err = result.unwrap_err();
-            println!("Extraction failed (may be timing): {}", err);
-            assert!(
-                !err.contains("moov atom not found"),
-                "Should NOT get moov atom error with fragmented MP4"
-            );
+        match result {
+            Ok(()) => {
+                println!("SUCCESS: Frame extracted during recording with fragmented MP4!");
+                assert!(
+                    std::path::Path::new(frame_path_str).exists(),
+                    "Frame file should exist"
+                );
+            }
+            Err(err) => {
+                // May still fail if not enough data written yet, but shouldn't be moov error
+                println!("Extraction failed (may be timing): {}", err);
+                assert!(
+                    !err.contains("moov atom not found"),
+                    "Should NOT get moov atom error with fragmented MP4"
+                );
+            }
         }
     }
 
@@ -459,8 +461,8 @@ async fn test_race_condition_during_recording() {
 
         // This SHOULD fail because recording is in progress
         // (may or may not fail depending on timing and ffmpeg buffering)
-        if result.is_err() {
-            println!("Expected failure during recording: {}", result.unwrap_err());
+        if let Err(err) = result {
+            println!("Expected failure during recording: {}", err);
         }
     }
 
