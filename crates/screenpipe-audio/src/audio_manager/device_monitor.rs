@@ -194,8 +194,9 @@ pub async fn start_device_monitor(
         // started different devices from saved config.
         let mut needs_initial_sync = true;
 
-        // One-time migration flag for legacy "Display N (output)" device names
-        #[cfg(target_os = "macos")]
+        // One-time migration flag: on first loop iteration, scrub the bare
+        // "default" sentinel (all platforms) and migrate legacy "Display N
+        // (output)" names to "System Audio (output)" (macOS only).
         let mut legacy_migrated = false;
 
         loop {
