@@ -1040,6 +1040,17 @@ impl AudioManager {
         self.options.read().await.enabled_devices.clone()
     }
 
+    /// Drop a name from `enabled_devices` without trying to parse it.
+    /// Used to scrub legacy/unparseable names (e.g. bare "default" persisted
+    /// from older versions) so the monitor stops re-trying them every poll.
+    pub async fn forget_device(&self, device_name: &str) {
+        self.options
+            .write()
+            .await
+            .enabled_devices
+            .remove(device_name);
+    }
+
     /// Stop all SCK-based (Output) audio devices for DRM pause.
     /// Input (microphone) devices are left running. Unlike `stop_device()`,
     /// this does NOT remove devices from `enabled_devices` since DRM pause

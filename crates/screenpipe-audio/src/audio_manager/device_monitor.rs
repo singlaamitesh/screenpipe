@@ -227,6 +227,27 @@ pub async fn start_device_monitor(
                 }
                 let enabled_devices = audio_manager.enabled_devices().await;
 
+                // Scrub unparseable legacy entries from `enabled_devices` once
+                // per session. Without this, names like bare "default" (persisted
+                // from older versions before the (input)/(output) suffix
+                // convention) cause the monitor below to log an ERROR every
+                // poll forever.
+                if !legacy_migrated {
+                    let unparseable: Vec<String> = enabled_devices
+                        .iter()
+                        .filter(|name| parse_audio_device(name).is_err())
+                        .cloned()
+                        .collect();
+                    for name in &unparseable {
+                        info!(
+                            "[DEVICE_RECOVERY] dropping unparseable legacy enabled-device entry '{}'",
+                            name
+                        );
+                        audio_manager.forget_device(name).await;
+                    }
+                }
+                let enabled_devices = audio_manager.enabled_devices().await;
+
                 // Migrate legacy "Display N (output)" device names to "System Audio (output)".
                 // This handles upgrades from versions that tracked per-display output devices.
                 #[cfg(target_os = "macos")]
@@ -253,6 +274,12 @@ pub async fn start_device_monitor(
                             let _ = audio_manager.start_device(&device).await;
                         }
                     }
+                }
+                // Non-macOS platforms still need to flip the flag so the scrub
+                // above runs exactly once.
+                #[cfg(not(target_os = "macos"))]
+                {
+                    legacy_migrated = true;
                 }
 
                 // Handle "Follow System Default" mode
@@ -867,7 +894,7 @@ pub async fn start_device_monitor(
                     let device = match parse_audio_device(&device_name) {
                         Ok(device) => device,
                         Err(e) => {
-                            error!("Device name {} invalid: {}", device_name, e);
+                            debug!("Device name {} invalid: {}", device_name, e);
                             continue;
                         }
                     };
@@ -909,7 +936,7 @@ pub async fn start_device_monitor(
                     let device = match parse_audio_device(device_name) {
                         Ok(device) => device,
                         Err(e) => {
-                            error!("Device name {} invalid: {}", device_name, e);
+                            debug!("Device name {} invalid: {}", device_name, e);
                             continue;
                         }
                     };
