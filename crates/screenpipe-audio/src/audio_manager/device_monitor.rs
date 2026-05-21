@@ -227,20 +227,27 @@ pub async fn start_device_monitor(
                 }
                 let enabled_devices = audio_manager.enabled_devices().await;
 
-                // Scrub unparseable legacy entries from `enabled_devices` once
-                // per session. Without this, names like bare "default" (persisted
-                // from older versions before the (input)/(output) suffix
-                // convention) cause the monitor below to log an ERROR every
-                // poll forever.
+                // Scrub the legacy bare "default" sentinel from `enabled_devices`
+                // once per session. Older versions persisted "default" to mean
+                // "follow the system default device"; today that's represented
+                // by the `use_system_default_audio` flag, and modern
+                // `start_device` only ever inserts names with an (input)/(output)
+                // suffix. The stray entry has no behavioral effect (recording
+                // proceeds on the resolved devices) but caused the monitor below
+                // to ERROR every poll forever.
+                //
+                // Narrowed to the literal sentinel so that an unplugged real
+                // device persisted under a bare name doesn't get silently
+                // dropped from the user's enabled set.
                 if !legacy_migrated {
-                    let unparseable: Vec<String> = enabled_devices
+                    let sentinels: Vec<String> = enabled_devices
                         .iter()
-                        .filter(|name| parse_audio_device(name).is_err())
+                        .filter(|name| name.trim().eq_ignore_ascii_case("default"))
                         .cloned()
                         .collect();
-                    for name in &unparseable {
+                    for name in &sentinels {
                         info!(
-                            "[DEVICE_RECOVERY] dropping unparseable legacy enabled-device entry '{}'",
+                            "[DEVICE_RECOVERY] dropping legacy '{}' sentinel from enabled_devices (use_system_default_audio supersedes it)",
                             name
                         );
                         audio_manager.forget_device(name).await;

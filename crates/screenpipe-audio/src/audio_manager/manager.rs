@@ -1040,9 +1040,10 @@ impl AudioManager {
         self.options.read().await.enabled_devices.clone()
     }
 
-    /// Drop a name from `enabled_devices` without trying to parse it.
-    /// Used to scrub legacy/unparseable names (e.g. bare "default" persisted
-    /// from older versions) so the monitor stops re-trying them every poll.
+    /// Drop a name from `enabled_devices` without trying to parse it or stop
+    /// a running stream. Used to scrub legacy sentinel entries (e.g. bare
+    /// "default" from older versions) that have no corresponding parseable
+    /// device and would otherwise stay in the set forever.
     pub async fn forget_device(&self, device_name: &str) {
         self.options
             .write()
