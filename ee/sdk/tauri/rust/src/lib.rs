@@ -34,14 +34,15 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use screenpipe_recorder::{self as recorder, Recorder};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{
     plugin::{Builder as PluginBuilder, TauriPlugin},
     Manager, Runtime, State,
 };
 use tokio::sync::Mutex;
+use tokio::time::timeout as tokio_timeout;
 
 // ─── public config + types ────────────────────────────────────────────
 
@@ -84,6 +85,10 @@ pub enum ScreenpipeTauriError {
     Io(#[from] std::io::Error),
     #[error("recorder error: {0}")]
     Recorder(String),
+    #[error("permissions request timed out after {0} ms")]
+    PermissionsTimeout(u64),
+    #[error("could not open `{path}`: {reason}")]
+    RevealFailed { path: String, reason: String },
 }
 
 impl From<ScreenpipeTauriError> for String {
@@ -263,34 +268,72 @@ impl ScreenpipeState {
             session: Mutex::new(SessionInner::default()),
         }
     }
+}
 
-    fn resolve_output(&self, options: &StartOptions) -> Result<String, ScreenpipeTauriError> {
-        if let Some(out) = options.output.clone() {
-            return Ok(out);
-        }
-        let dir = options
-            .output_dir
-            .clone()
-            .map(PathBuf::from)
-            .or_else(|| self.config.output_dir.clone())
-            .ok_or(ScreenpipeTauriError::OutputUnconfigured)?;
-        let stem = options
-            .filename
-            .clone()
-            .or_else(|| options.filename_prefix.clone())
-            .or_else(|| self.config.filename_prefix.clone())
-            .unwrap_or_else(|| "screenpipe".into());
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        let file = if options.filename.is_some() {
-            stem
-        } else {
-            format!("{stem}-{ts}.mp4")
-        };
+/// Resolve the MP4 output path for a session. Free fn (not a method on
+/// `ScreenpipeState`) so it's directly unit-testable without spinning
+/// up the tokio Mutex.
+///
+/// Precedence:
+///   1. `options.output` (explicit, wins absolutely)
+///   2. `(options.output_dir | config.output_dir) + (options.filename | ...)`
+///   3. error `OutputUnconfigured`
+///
+/// When the caller passes an explicit `filename`, we honor it verbatim
+/// but append `.mp4` if it lacks any extension — guards against
+/// `filename: "foo"` landing at `/tmp/foo` with ffmpeg unable to infer
+/// the container.
+///
+/// `now_ms` is injected so tests get deterministic timestamps.
+fn resolve_output(
+    config: &ScreenpipeConfig,
+    options: &StartOptions,
+    now_ms: u64,
+) -> Result<String, ScreenpipeTauriError> {
+    if let Some(out) = options.output.clone() {
+        return Ok(out);
+    }
+    let dir = options
+        .output_dir
+        .clone()
+        .map(PathBuf::from)
+        .or_else(|| config.output_dir.clone())
+        .ok_or(ScreenpipeTauriError::OutputUnconfigured)?;
+    if let Some(filename) = options.filename.clone() {
+        let stem_has_ext = Path::new(&filename).extension().is_some();
+        let file = if stem_has_ext { filename } else { format!("{filename}.mp4") };
         std::fs::create_dir_all(&dir)?;
-        Ok(dir.join(file).to_string_lossy().into_owned())
+        return Ok(dir.join(file).to_string_lossy().into_owned());
+    }
+    let stem = options
+        .filename_prefix
+        .clone()
+        .or_else(|| config.filename_prefix.clone())
+        .unwrap_or_else(|| "screenpipe".into());
+    let file = format!("{stem}-{now_ms}.mp4");
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir.join(file).to_string_lossy().into_owned())
+}
+
+impl StartOptions {
+    /// Build the [`recorder::RecorderOptions`] consumed by the recorder.
+    /// Takes `output` separately because StartOptions::output is
+    /// `Option<String>` (resolved upstream via [`resolve_output`]),
+    /// whereas RecorderOptions::output is required.
+    fn into_recorder_options(self, output: String) -> recorder::RecorderOptions {
+        recorder::RecorderOptions {
+            output,
+            monitor_id: self.monitor_id,
+            microphone: self.microphone,
+            system_audio: self.system_audio,
+            ignored_windows: self.ignored_windows,
+            included_windows: self.included_windows,
+            ignored_urls: self.ignored_urls,
+            data_dir: self.data_dir,
+            mp4_monitors: self.mp4_monitors,
+            paired_monitors: self.paired_monitors,
+            ui_capture: self.ui_capture.map(Into::into),
+        }
     }
 }
 
@@ -336,11 +379,17 @@ fn ser_err(name: &str, message: impl ToString) -> SerializableError {
 
 #[tauri::command]
 async fn permissions(
-    _options: Option<PermissionOptions>,
+    options: Option<PermissionOptions>,
 ) -> Result<PermissionStatus, String> {
-    let status = recorder::request_permissions()
-        .await
-        .map_err(|e| e.to_string())?;
+    let timeout_ms = options.and_then(|o| o.timeout_ms);
+    let fut = recorder::request_permissions();
+    let status = match timeout_ms {
+        Some(ms) => tokio_timeout(Duration::from_millis(ms), fut)
+            .await
+            .map_err(|_| ScreenpipeTauriError::PermissionsTimeout(ms).to_string())?
+            .map_err(|e| e.to_string())?,
+        None => fut.await.map_err(|e| e.to_string())?,
+    };
     Ok(PermissionStatus {
         screen: status.screen,
         microphone: status.microphone,
@@ -357,9 +406,8 @@ async fn start(
     if inner.recorder.is_some() {
         return Err(ScreenpipeTauriError::AlreadyStarted.into());
     }
-    let output = state.resolve_output(&opts)?;
-    let mut rec_opts: recorder::RecorderOptions = opts.into();
-    rec_opts.output = output.clone();
+    let output = resolve_output(&state.config, &opts, now_unix_ms())?;
+    let rec_opts = opts.into_recorder_options(output.clone());
 
     let mut rec = Recorder::new(rec_opts).map_err(|e| {
         ScreenpipeTauriError::Recorder(e.to_string()).to_string()
@@ -475,7 +523,7 @@ async fn snapshot(
 
 #[tauri::command]
 async fn reveal<R: Runtime>(
-    app: tauri::AppHandle<R>,
+    _app: tauri::AppHandle<R>,
     state: State<'_, Arc<ScreenpipeState>>,
     file: Option<String>,
 ) -> Result<bool, String> {
@@ -489,12 +537,30 @@ async fn reveal<R: Runtime>(
             }
         }
     };
-    let _ = app;
-    // Tauri 2 doesn't ship `shell::open` in the core, just emit the path
-    // so the host can pipe it to their own opener (tauri-plugin-shell or
-    // a custom IPC). Returning true means "we know about it".
-    let _ = target;
+    open_in_finder(&target).map_err(String::from)?;
     Ok(true)
+}
+
+/// Open a file/folder in the OS native browser. Avoids pulling
+/// `tauri-plugin-shell` for what is a one-line per-platform shell-out.
+/// Spawned, not awaited — the open call is "fire and forget" (the OS
+/// launcher returns before the GUI app finishes loading).
+fn open_in_finder(path: &str) -> Result<(), ScreenpipeTauriError> {
+    let bin = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(target_os = "windows") {
+        "explorer.exe"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(bin)
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| ScreenpipeTauriError::RevealFailed {
+            path: path.into(),
+            reason: e.to_string(),
+        })
 }
 
 #[tauri::command]
@@ -533,25 +599,207 @@ pub fn init<R: Runtime>(config: ScreenpipeConfig) -> TauriPlugin<R> {
         .build()
 }
 
-// ─── RecorderOptions conversion ────────────────────────────────────────
+// ─── tests ─────────────────────────────────────────────────────────────
 
-impl From<StartOptions> for recorder::RecorderOptions {
-    fn from(v: StartOptions) -> Self {
-        Self {
-            // `output` is overridden by `state.resolve_output(...)` before
-            // we hand the options to the recorder; this default just lets
-            // `.into()` produce a valid value without panicking.
-            output: v.output.unwrap_or_default(),
-            monitor_id: v.monitor_id,
-            microphone: v.microphone,
-            system_audio: v.system_audio,
-            ignored_windows: v.ignored_windows,
-            included_windows: v.included_windows,
-            ignored_urls: v.ignored_urls,
-            data_dir: v.data_dir,
-            mp4_monitors: v.mp4_monitors,
-            paired_monitors: v.paired_monitors,
-            ui_capture: v.ui_capture.map(Into::into),
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_ui_capture() -> UiCaptureOptions {
+        UiCaptureOptions::default()
+    }
+
+    fn default_start() -> StartOptions {
+        StartOptions::default()
+    }
+
+    // ── UiCaptureOptions → recorder::UiCaptureOptions ─────────────────
+
+    #[test]
+    fn ui_capture_conversion_passes_every_field_through() {
+        // Each toggle is wired independently — a typo on any line of
+        // the `From` impl would leak through to the recorder and the
+        // user's privacy posture would be wrong. Test every field.
+        let src = UiCaptureOptions {
+            capture_clicks: Some(true),
+            capture_text: Some(false),
+            capture_keystrokes: Some(true),
+            capture_app_switch: Some(false),
+            capture_window_focus: Some(true),
+            capture_scroll: Some(false),
+            capture_clipboard: Some(true),
+            capture_clipboard_content: Some(false),
+            capture_context: Some(true),
+            capture_mouse_move: Some(false),
+        };
+        let got: recorder::UiCaptureOptions = src.into();
+        assert_eq!(got.capture_clicks, Some(true));
+        assert_eq!(got.capture_text, Some(false));
+        assert_eq!(got.capture_keystrokes, Some(true));
+        assert_eq!(got.capture_app_switch, Some(false));
+        assert_eq!(got.capture_window_focus, Some(true));
+        assert_eq!(got.capture_scroll, Some(false));
+        assert_eq!(got.capture_clipboard, Some(true));
+        assert_eq!(got.capture_clipboard_content, Some(false));
+        assert_eq!(got.capture_context, Some(true));
+        assert_eq!(got.capture_mouse_move, Some(false));
+    }
+
+    #[test]
+    fn ui_capture_empty_stays_empty() {
+        let src = empty_ui_capture();
+        let got: recorder::UiCaptureOptions = src.into();
+        assert!(got.capture_clicks.is_none());
+        assert!(got.capture_scroll.is_none());
+        assert!(got.capture_mouse_move.is_none());
+    }
+
+    // ── StartOptions::into_recorder_options ───────────────────────────
+
+    #[test]
+    fn into_recorder_options_uses_supplied_output() {
+        // `output` argument wins regardless of what StartOptions.output
+        // holds — the resolve_output call upstream is the single source
+        // of truth, and this conversion mustn't second-guess it.
+        let mut opts = default_start();
+        opts.output = Some("/should/be/ignored.mp4".into());
+        let rec = opts.into_recorder_options("/correct.mp4".into());
+        assert_eq!(rec.output, "/correct.mp4");
+    }
+
+    #[test]
+    fn into_recorder_options_threads_every_field() {
+        // Field-by-field smoke: any one line getting forgotten in the
+        // conversion would silently drop a user-facing option (data_dir,
+        // mp4_monitors, etc.) and the recorder would happily record
+        // without paired capture / multi-monitor. Catch it here.
+        let opts = StartOptions {
+            output: None,
+            output_dir: None,
+            filename: None,
+            filename_prefix: None,
+            monitor_id: Some(2),
+            microphone: Some(true),
+            system_audio: Some(false),
+            ignored_windows: Some(vec!["1Password".into()]),
+            included_windows: Some(vec!["Code".into()]),
+            ignored_urls: Some(vec!["bank".into()]),
+            data_dir: Some("/data".into()),
+            mp4_monitors: Some(vec![1, 2]),
+            paired_monitors: Some(vec![1]),
+            ui_capture: Some(UiCaptureOptions {
+                capture_scroll: Some(true),
+                ..Default::default()
+            }),
+        };
+        let rec = opts.into_recorder_options("/out.mp4".into());
+        assert_eq!(rec.output, "/out.mp4");
+        assert_eq!(rec.monitor_id, Some(2));
+        assert_eq!(rec.microphone, Some(true));
+        assert_eq!(rec.system_audio, Some(false));
+        assert_eq!(rec.ignored_windows.as_deref(), Some(&["1Password".to_string()][..]));
+        assert_eq!(rec.included_windows.as_deref(), Some(&["Code".to_string()][..]));
+        assert_eq!(rec.ignored_urls.as_deref(), Some(&["bank".to_string()][..]));
+        assert_eq!(rec.data_dir.as_deref(), Some("/data"));
+        assert_eq!(rec.mp4_monitors.as_deref(), Some(&[1u32, 2][..]));
+        assert_eq!(rec.paired_monitors.as_deref(), Some(&[1u32][..]));
+        assert_eq!(rec.ui_capture.as_ref().unwrap().capture_scroll, Some(true));
+        assert!(rec.ui_capture.as_ref().unwrap().capture_clicks.is_none());
+    }
+
+    // ── resolve_output ───────────────────────────────────────────────
+
+    /// Build a config + a tempdir that backs `output_dir`. Returning the
+    /// tempdir to the caller keeps it alive for the duration of the test;
+    /// dropping it would clean up the directory and break any path
+    /// assertions that happened mid-test.
+    fn cfg_in_tempdir(prefix: Option<&str>) -> (ScreenpipeConfig, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cfg = ScreenpipeConfig {
+            output_dir: Some(dir.path().to_path_buf()),
+            filename_prefix: prefix.map(String::from),
+        };
+        (cfg, dir)
+    }
+
+    #[test]
+    fn resolve_output_explicit_output_wins() {
+        // When the caller passes `output`, neither config defaults nor
+        // filename heuristics should override.
+        let (cfg, _td) = cfg_in_tempdir(Some("wrong-prefix"));
+        let mut opts = default_start();
+        opts.output = Some("/correct/session.mp4".into());
+        let got = resolve_output(&cfg, &opts, 42).unwrap();
+        assert_eq!(got, "/correct/session.mp4");
+    }
+
+    #[test]
+    fn resolve_output_no_dir_anywhere_errors() {
+        // No `output`, no `output_dir` on options, no `output_dir` on
+        // config → can't compose a path, so we'd rather error loudly
+        // than silently pick a temp dir.
+        let cfg = ScreenpipeConfig {
+            output_dir: None,
+            filename_prefix: Some("ignored".into()),
+        };
+        let opts = default_start();
+        let err = resolve_output(&cfg, &opts, 42).unwrap_err();
+        assert!(matches!(err, ScreenpipeTauriError::OutputUnconfigured));
+    }
+
+    #[test]
+    fn resolve_output_uses_option_output_dir_over_config() {
+        // Per-call `output_dir` wins over the plugin's default.
+        let (cfg, _cfg_td) = cfg_in_tempdir(Some("screenpipe"));
+        let per_call = tempfile::tempdir().unwrap();
+        let mut opts = default_start();
+        opts.output_dir = Some(per_call.path().to_string_lossy().into());
+        opts.filename_prefix = Some("foo".into());
+        let got = resolve_output(&cfg, &opts, 1700).unwrap();
+        assert!(got.starts_with(&per_call.path().to_string_lossy().into_owned()));
+        assert!(got.contains("foo-1700"));
+        assert!(got.ends_with(".mp4"));
+    }
+
+    #[test]
+    fn resolve_output_uses_option_filename_verbatim() {
+        let (cfg, td) = cfg_in_tempdir(None);
+        let mut opts = default_start();
+        opts.filename = Some("session.mp4".into());
+        let got = resolve_output(&cfg, &opts, 42).unwrap();
+        assert_eq!(got, td.path().join("session.mp4").to_string_lossy());
+    }
+
+    #[test]
+    fn resolve_output_appends_mp4_when_filename_has_no_extension() {
+        // Safety net: ffmpeg infers container from the path's extension.
+        // `filename: "foo"` would land at `{dir}/foo` and ffmpeg would
+        // either pick a wrong container or error. Default to .mp4.
+        let (cfg, td) = cfg_in_tempdir(None);
+        let mut opts = default_start();
+        opts.filename = Some("nostalgia".into());
+        let got = resolve_output(&cfg, &opts, 42).unwrap();
+        assert_eq!(got, td.path().join("nostalgia.mp4").to_string_lossy());
+    }
+
+    #[test]
+    fn resolve_output_preserves_non_mp4_extension() {
+        // If the caller asks for `session.mkv` we trust them.
+        let (cfg, td) = cfg_in_tempdir(None);
+        let mut opts = default_start();
+        opts.filename = Some("session.mkv".into());
+        let got = resolve_output(&cfg, &opts, 42).unwrap();
+        assert_eq!(got, td.path().join("session.mkv").to_string_lossy());
+    }
+
+    #[test]
+    fn resolve_output_falls_back_to_default_prefix() {
+        // Neither options.filename* nor config.filename_prefix set →
+        // canonical "screenpipe" stem. Catches a regression if someone
+        // changes the fallback string.
+        let (cfg, _td) = cfg_in_tempdir(None);
+        let opts = default_start();
+        let got = resolve_output(&cfg, &opts, 9999).unwrap();
+        assert!(got.contains("screenpipe-9999"));
     }
 }
