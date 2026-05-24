@@ -257,8 +257,13 @@ impl SafeMonitor {
                         return Err("Invalid monitor dimensions".to_string());
                     }
 
+                    // One-shot via SCScreenshotManager: WindowServer / replayd
+                    // wakes only for this frame. The persistent-SCStream path
+                    // is wrong for screenpipe's event-driven capture loop —
+                    // it pins WindowServer at 2 fps continuously while the
+                    // frame comparer throws away 95%+ of the resulting frames.
                     monitor
-                        .capture_image()
+                        .capture_image_oneshot()
                         .map_err(|e| format!("{}", e))
                         .map(DynamicImage::ImageRgba8)
                 } else {
@@ -328,7 +333,7 @@ impl SafeMonitor {
                     }
 
                     monitor
-                        .capture_image_excluding(&ids)
+                        .capture_image_oneshot_excluding(&ids)
                         .map_err(|e| format!("{}", e))
                         .map(DynamicImage::ImageRgba8)
                 } else {
