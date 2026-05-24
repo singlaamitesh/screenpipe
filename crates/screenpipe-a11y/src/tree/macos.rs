@@ -521,6 +521,7 @@ struct WalkState {
     max_depth: usize,
     max_nodes: usize,
     walk_timeout: std::time::Duration,
+    element_timeout_secs: f32,
     start: Instant,
     truncated: bool,
     truncation_reason: super::TruncationReason,
@@ -569,6 +570,7 @@ impl WalkState {
             max_depth: config.max_depth,
             max_nodes: config.effective_max_nodes(),
             walk_timeout: config.effective_walk_timeout(),
+            element_timeout_secs: config.element_timeout_secs,
             start,
             truncated: false,
             truncation_reason: super::TruncationReason::None,
@@ -689,10 +691,12 @@ fn walk_element(elem: &ax::UiElement, depth: usize, state: &mut WalkState) {
         std::thread::yield_now();
     }
 
-    // Per-element timeout is unnecessary: AXUIElementSetMessagingTimeout
-    // (called once on the app root at walk start) is inherited by every
-    // child UIElement returned via the messaging protocol. Removing the
-    // per-element call eliminates ~node_count AX IPC roundtrips per walk.
+    // Set a per-element timeout to prevent IPC hangs.
+    // Per Apple's AXUIElement.h: the timeout is per-element (only the
+    // system-wide element propagates globally). Without this, a single
+    // unresponsive element can block for up to the default 6s before
+    // returning, far longer than walk_timeout's check between elements.
+    let _ = elem.set_messaging_timeout_secs(state.element_timeout_secs);
 
     // Get the role
     let role_str = match elem.role() {
