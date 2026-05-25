@@ -193,9 +193,8 @@ pub fn start(app: AppHandle) {
     let prewarm_app = app.clone();
     let prewarm_suppressed = Arc::clone(&suppressed_titles);
     tauri::async_runtime::spawn(async move {
-        let mut sub = screenpipe_events::subscribe_to_event::<MeetingPrewarmEvent>(
-            "meeting_about_to_start",
-        );
+        let mut sub =
+            screenpipe_events::subscribe_to_event::<MeetingPrewarmEvent>("meeting_about_to_start");
         while let Some(event) = sub.next().await {
             if !meeting_notifications_enabled(&prewarm_app) {
                 debug!("meeting prewarm: notification skipped by preference");
