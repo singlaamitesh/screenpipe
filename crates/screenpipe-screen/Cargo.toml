@@ -77,9 +77,7 @@ harness = false
 
 # macOS: sck-rs for 12.3+ (ScreenCaptureKit), xcap as fallback for older versions
 [target.'cfg(target_os = "macos")'.dependencies]
-# Pinned to the HD-capture branch (screenpipe/sck-rs#6) for start_hd_capture.
-# Switch back to the default branch once that PR merges.
-sck-rs = { git = "https://github.com/screenpipe/sck-rs", branch = "feat/hd-high-fps-stream" }
+sck-rs = { git = "https://github.com/screenpipe/sck-rs" }
 xcap = "0.9"
 libc = "0.2.168"
 cidre = { git = "https://github.com/yury/cidre.git", features = ["vn", "cv", "cg", "app"] }
