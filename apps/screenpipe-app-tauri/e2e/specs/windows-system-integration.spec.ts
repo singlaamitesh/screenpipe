@@ -139,6 +139,14 @@ async function pageIsAlive(): Promise<boolean> {
   );
 }
 
+async function waitForPageAlive(timeoutMs = t(10_000)): Promise<void> {
+  await browser.waitUntil(pageIsAlive, {
+    timeout: timeoutMs,
+    interval: t(250),
+    timeoutMsg: "Home WebView did not become interactive after route change",
+  });
+}
+
 describe("Windows system integration", function () {
   this.timeout(180_000);
 
@@ -180,9 +188,9 @@ Add-Type -AssemblyName System.Windows.Forms
       expect(screen.height).toBeGreaterThan(0);
     }
 
-    const vision = await fetchJson(apiUrl(api, "/vision/status"), authHeaders(api.key));
-    expect(vision.status).toBeGreaterThan(0);
-    expect(vision.status).toBeLessThan(500);
+    const visionStatus = await fetchJson(apiUrl(api, "/vision/status"), authHeaders(api.key));
+    expect(visionStatus.status).toBeGreaterThan(0);
+    expect(visionStatus.status).toBeLessThan(500);
   });
 
   it("runs against the isolated E2E data directory instead of user app data", async function () {
@@ -449,8 +457,7 @@ $uniqueNames = @($names | Sort-Object -Unique)
     for (const page of routes) {
       await showWindow({ Home: { page } });
       await browser.switchToWindow("home");
-      await browser.pause(200);
-      expect(await pageIsAlive()).toBe(true);
+      await waitForPageAlive();
     }
 
     await showWindow({ Home: { page: "home" } });
