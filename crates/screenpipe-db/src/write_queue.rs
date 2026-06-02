@@ -485,38 +485,41 @@ async fn execute_batch(
     let mut conn_opt = None;
 
     for attempt in 1..=max_retries {
-        let mut conn =
-            match tokio::time::timeout(Duration::from_secs(5), write_pool.acquire()).await {
-                Ok(Ok(conn)) => conn,
-                Ok(Err(e)) => {
-                    // "unable to open database file" (SQLITE_CANTOPEN) on acquire
-                    // means the data dir/file vanished mid-run (deleted folder,
-                    // etc.) — the top runtime DB error (SCREENPIPE-CLI-HA).
-                    // Recreate the dir AND the db file, then retry, instead of
-                    // erroring every queued write. Recreating the dir alone is
-                    // not enough: the pool opens with create_if_missing=false, so
-                    // a fresh acquire against the now-missing file would
-                    // CANTOPEN again. The recreated db is empty (schema is
-                    // restored by migrations on the next startup); this just
-                    // clears CANTOPEN so the pool can reconnect.
-                    if is_cantopen_error(&e) && attempt < max_retries {
-                        let recovered = ensure_db_openable(db_path).await;
-                        warn!(
-                            "write_queue: acquire CANTOPEN (attempt {}/{}), db_recovered={}, retrying",
-                            attempt, max_retries, recovered
-                        );
-                        last_error = Some(e);
-                        tokio::time::sleep(Duration::from_millis(50 * attempt as u64)).await;
-                        continue;
-                    }
-                    send_error_to_all(batch, e);
-                    return;
+        // Bind the timeout result first: inlining it into `match` puts this
+        // construct right at rustfmt's width boundary, where the formatter is
+        // non-idempotent (it flip-flops the layout, failing `fmt --check`).
+        let acquired = tokio::time::timeout(Duration::from_secs(5), write_pool.acquire()).await;
+        let mut conn = match acquired {
+            Ok(Ok(conn)) => conn,
+            Ok(Err(e)) => {
+                // "unable to open database file" (SQLITE_CANTOPEN) on acquire
+                // means the data dir/file vanished mid-run (deleted folder,
+                // etc.) — the top runtime DB error (SCREENPIPE-CLI-HA).
+                // Recreate the dir AND the db file, then retry, instead of
+                // erroring every queued write. Recreating the dir alone is
+                // not enough: the pool opens with create_if_missing=false, so
+                // a fresh acquire against the now-missing file would
+                // CANTOPEN again. The recreated db is empty (schema is
+                // restored by migrations on the next startup); this just
+                // clears CANTOPEN so the pool can reconnect.
+                if is_cantopen_error(&e) && attempt < max_retries {
+                    let recovered = ensure_db_openable(db_path).await;
+                    warn!(
+                        "write_queue: acquire CANTOPEN (attempt {}/{}), db_recovered={}, retrying",
+                        attempt, max_retries, recovered
+                    );
+                    last_error = Some(e);
+                    tokio::time::sleep(Duration::from_millis(50 * attempt as u64)).await;
+                    continue;
                 }
-                Err(_) => {
-                    send_error_to_all(batch, sqlx::Error::PoolTimedOut);
-                    return;
-                }
-            };
+                send_error_to_all(batch, e);
+                return;
+            }
+            Err(_) => {
+                send_error_to_all(batch, sqlx::Error::PoolTimedOut);
+                return;
+            }
+        };
 
         match sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await {
             Ok(_) => {
@@ -1588,7 +1591,11 @@ pub(crate) fn ensure_db_parent_dir(database_path: &str, create_tree: bool) -> bo
             true
         }
         Err(e) => {
-            warn!("db: failed to create parent dir {}: {}", parent.display(), e);
+            warn!(
+                "db: failed to create parent dir {}: {}",
+                parent.display(),
+                e
+            );
             false
         }
     }
@@ -2136,7 +2143,12 @@ mod tests {
         let queue = WriteQueue { tx };
 
         let pool_clone = pool.clone();
-        let handle = tokio::spawn(drain_loop(rx, pool_clone, sem, std::sync::Arc::from("sqlite::memory:")));
+        let handle = tokio::spawn(drain_loop(
+            rx,
+            pool_clone,
+            sem,
+            std::sync::Arc::from("sqlite::memory:"),
+        ));
 
         // Submit a write
         let result = queue
