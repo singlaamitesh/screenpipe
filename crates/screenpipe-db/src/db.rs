@@ -9071,8 +9071,10 @@ LIMIT ? OFFSET ?
             .filter_map(|r| {
                 let id: i64 = r.try_get("id").ok()?;
                 let ts: DateTime<Utc> = r.try_get("timestamp").ok()?;
-                let file_path: String = r.try_get("file_path").unwrap_or_default();
-                Some((id, ts.timestamp_millis(), file_path))
+                // Lowercased for case-insensitive device matching (mirrors #3776's
+                // lower(file_path) in mark_chunks_covered_by_live).
+                let file_path: String = r.try_get::<String, _>("file_path").unwrap_or_default();
+                Some((id, ts.timestamp_millis(), file_path.to_lowercase()))
             })
             .collect();
         if chunks.is_empty() {
@@ -9095,7 +9097,8 @@ LIMIT ? OFFSET ?
                 s.device_name,
                 if s.is_input { "input" } else { "output" }
             )
-            .replace(['/', '\\'], "_");
+            .replace(['/', '\\'], "_")
+            .to_lowercase();
             let pick = chunks
                 .iter()
                 .filter(|c| (c.1 - seg_ms).abs() <= window_ms && c.2.contains(device_key.as_str()))
