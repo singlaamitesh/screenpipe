@@ -20,7 +20,7 @@
 
 use async_trait::async_trait;
 use once_cell::sync::Lazy;
-use regex::Regex;
+use regex::{Regex, RegexSet};
 
 use crate::{
     adapters::national_id,
@@ -260,16 +260,36 @@ impl Redactor for RegexRedactor {
     }
 }
 
+/// All [`PATTERNS`] compiled into one DFA for a single-pass "does any
+/// pattern match?" gate. Built from the patterns' own source strings, so
+/// it can't drift. The common case (PII-free chrome / code) matches none
+/// and returns after this one pass instead of running ~20 separate
+/// `find_iter` scans. Set indices line up 1:1 with `PATTERNS`, so
+/// iterating the matched indices preserves the priority order overlap
+/// suppression relies on.
+static PATTERN_SET: Lazy<RegexSet> = Lazy::new(|| {
+    RegexSet::new(PATTERNS.iter().map(|p| p.re.as_str())).expect("regex set compiles")
+});
+
 /// Single-text path — synchronous, allocation-light. Public for use
 /// inside the [`crate::pipeline::Pipeline`] without going through the
 /// async trait.
 pub fn redact_one(text: &str) -> RedactionOutput {
-    let mut spans: Vec<RedactedSpan> = Vec::new();
-    // ASCII-lowercased copy for context-keyword lookups. `to_ascii_lowercase`
-    // preserves byte length, so match offsets stay valid against it.
-    let lower = text.to_ascii_lowercase();
+    // Fast path: one DFA pass. Most captured text has no PII, so we skip
+    // the per-pattern scans entirely.
+    let candidates = PATTERN_SET.matches(text);
+    if !candidates.matched_any() {
+        return RedactionOutput {
+            input: text.to_string(),
+            redacted: text.to_string(),
+            spans: Vec::new(),
+        };
+    }
 
-    for pat in PATTERNS.iter() {
+    let mut spans: Vec<RedactedSpan> = Vec::new();
+
+    for idx in candidates.iter() {
+        let pat = &PATTERNS[idx];
         for m in pat.re.find_iter(text) {
             let matched = &text[m.start()..m.end()];
 
@@ -283,8 +303,11 @@ pub fn redact_one(text: &str) -> RedactionOutput {
             }
 
             // Context requirement — weak-checksum numeric IDs only count
-            // when one of their keywords sits just before the match.
-            if !pat.context.is_empty() && !has_context(&lower, m.start(), pat.context) {
+            // when one of their keywords sits just before the match. Only
+            // the small preceding window is lowercased (and only on the
+            // rare context-gated match), so the hot path stays
+            // allocation-free for ordinary text.
+            if !pat.context.is_empty() && !has_context(text, m.start(), pat.context) {
                 continue;
             }
 
@@ -316,15 +339,16 @@ pub fn redact_one(text: &str) -> RedactionOutput {
 }
 
 /// Does one of `keys` (already lowercase) appear within the ~48 bytes
-/// before `match_start`? `lower` must be the ASCII-lowercased input so
-/// offsets line up. Used to gate weak-checksum numeric IDs so a bare
-/// digit run only counts next to its label ("SIN: …", "IMEI …").
-fn has_context(lower: &str, match_start: usize, keys: &[&str]) -> bool {
+/// before `match_start`? Only the small preceding window is lowercased,
+/// so a long input doesn't pay a full-copy allocation. Used to gate
+/// weak-checksum numeric IDs so a bare digit run only counts next to its
+/// label ("SIN: …", "IMEI …").
+fn has_context(text: &str, match_start: usize, keys: &[&str]) -> bool {
     let mut start = match_start.saturating_sub(48);
-    while start > 0 && !lower.is_char_boundary(start) {
+    while start > 0 && !text.is_char_boundary(start) {
         start -= 1;
     }
-    let window = &lower[start..match_start];
+    let window = text[start..match_start].to_ascii_lowercase();
     keys.iter().any(|k| window.contains(k))
 }
 
@@ -540,5 +564,90 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn measure(label: &str, corpus: &[String], iters: usize) -> f64 {
+        for line in corpus {
+            let _ = redact_one(line); // warm
+        }
+        let started = std::time::Instant::now();
+        let mut sink = 0usize;
+        for _ in 0..iters {
+            for line in corpus {
+                sink += redact_one(line).spans.len();
+            }
+        }
+        let elapsed = started.elapsed();
+        let calls = iters * corpus.len();
+        let per_call_ns = elapsed.as_nanos() as f64 / calls as f64;
+        let bytes: usize = corpus.iter().map(|s| s.len()).sum();
+        println!(
+            "[{label}] {calls} calls => {per_call_ns:.0} ns/call, {:.1} MB/s (sink={sink})",
+            (bytes * iters) as f64 / elapsed.as_secs_f64() / 1e6,
+        );
+        per_call_ns
+    }
+
+    #[test]
+    fn throughput_on_realistic_corpus() {
+        // PII-free chrome / code / logs — the dominant real workload that
+        // the RegexSet gate should let us skip the per-pattern scans on.
+        let pii_free: Vec<String> = [
+            "Cursor — main.rs — screenpipe",
+            "fn redact_one(text: &str) -> RedactionOutput {",
+            "Slack | #engineering | 3 unread messages",
+            "monitor 605818409 frame_id=549130407 elapsed=100.4s rows=1434",
+            "Just a normal sentence with no sensitive content whatsoever.",
+            "https://app.example.com/users/3847561290/settings?tab=billing",
+            &"lorem ipsum dolor sit amet ".repeat(40),
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+        // Mixed: secrets + structured IDs in most lines (pessimistic).
+        let mixed: Vec<String> = [
+            "Contact: marcus.chen@helios-ai.io for the Q3 review",
+            "export OPENAI_API_KEY=sk-proj-abc123def456ghi789jkl012mno345",
+            "Charge to 4242 4242 4242 4242 exp 04/27",
+            "Invoice IBAN GB82 WEST 1234 5698 7654 32 due net-30",
+            "social insurance number 046 454 286 on file for payroll",
+            "Aadhaar 2341 2341 2340 linked to UIDAI record",
+            "Order #2581473960 shipped — tracking 1Z999AA10123456784",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+        let free_ns = measure("pii-free", &pii_free, 5_000);
+        let mixed_ns = measure("mixed", &mixed, 5_000);
+
+        // Clean A/B on the SAME pii-free input: the RegexSet gate vs the
+        // old "run every pattern" path. Isolates exactly what the gate buys
+        // for the dominant real workload.
+        let ungated =
+            |text: &str| -> usize { PATTERNS.iter().map(|p| p.re.find_iter(text).count()).sum() };
+        for line in &pii_free {
+            let _ = ungated(line);
+        }
+        let started = std::time::Instant::now();
+        let mut sink = 0usize;
+        for _ in 0..5_000 {
+            for line in &pii_free {
+                sink += ungated(line);
+            }
+        }
+        let ungated_ns = started.elapsed().as_nanos() as f64 / (5_000 * pii_free.len()) as f64;
+        println!(
+            "[pii-free NO-gate] {ungated_ns:.0} ns/call (sink={sink})  =>  gate speedup {:.1}x",
+            ungated_ns / free_ns
+        );
+
+        // Generous regression guard (clears in debug too). Tighten once we
+        // have a CI-hardware baseline.
+        assert!(
+            free_ns < 50_000.0 && mixed_ns < 50_000.0,
+            "redact_one regressed: pii-free {free_ns:.0} ns, mixed {mixed_ns:.0} ns"
+        );
     }
 }
