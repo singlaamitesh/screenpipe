@@ -754,6 +754,68 @@ pub fn south_korea_rrn(s: &str) -> bool {
 // alphabet with Ñ, position weighting) could not be verified against a
 // trustworthy public vector, so we do not ship an unverified checksum.
 
+/// IPv6 address — validated by the standard library parser (handles `::`
+/// compression, embedded IPv4, all the RFC 4291 forms). Strips an optional
+/// zone id / CIDR suffix first.
+pub fn ipv6(s: &str) -> bool {
+    let core = s.split(['%', '/']).next().unwrap_or(s);
+    core.parse::<std::net::Ipv6Addr>().is_ok()
+}
+
+/// ICCID (SIM serial): 19-20 digits, major-industry prefix 89, Luhn check.
+pub fn iccid(s: &str) -> bool {
+    let d = digits(s);
+    if !(19..=20).contains(&d.len()) || d[0] != 8 || d[1] != 9 {
+        return false;
+    }
+    luhn_slice(&d)
+}
+
+/// Bitcoin legacy address (P2PKH `1…` / P2SH `3…`): Base58Check — the
+/// 4-byte trailer must equal the first 4 bytes of double-SHA-256 over the
+/// version+payload. Bech32 (`bc1…`) is deferred (different checksum).
+pub fn btc_address(s: &str) -> bool {
+    use sha2::{Digest, Sha256};
+    let s = s.trim();
+    if !(26..=35).contains(&s.len()) || !(s.starts_with('1') || s.starts_with('3')) {
+        return false;
+    }
+    const ALPHABET: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    // base58 decode into a big-endian byte vector
+    let mut bytes: Vec<u8> = vec![0];
+    for ch in s.bytes() {
+        let val = match ALPHABET.iter().position(|&c| c == ch) {
+            Some(p) => p as u32,
+            None => return false,
+        };
+        let mut carry = val;
+        for b in bytes.iter_mut() {
+            carry += *b as u32 * 58;
+            *b = (carry & 0xff) as u8;
+            carry >>= 8;
+        }
+        while carry > 0 {
+            bytes.push((carry & 0xff) as u8);
+            carry >>= 8;
+        }
+    }
+    // leading '1' chars are leading zero bytes
+    for ch in s.bytes() {
+        if ch == b'1' {
+            bytes.push(0);
+        } else {
+            break;
+        }
+    }
+    bytes.reverse();
+    if bytes.len() < 5 {
+        return false;
+    }
+    let (payload, checksum) = bytes.split_at(bytes.len() - 4);
+    let h2 = Sha256::digest(Sha256::digest(payload));
+    &h2[..4] == checksum
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -996,5 +1058,51 @@ mod tests {
         assert!(australia_tfn("123456782")); // traced valid
         assert!(australia_tfn("876543210")); // traced valid
         assert!(!australia_tfn("123456789")); // fails weighted mod-11
+    }
+
+    #[test]
+    fn ipv6_known_values() {
+        assert!(ipv6("2001:0db8:85a3:0000:0000:8a2e:0370:7334"));
+        assert!(ipv6("fe80::1ff:fe23:4567:890a"));
+        assert!(ipv6("::1"));
+        assert!(ipv6("2001:db8::1%eth0")); // zone id stripped
+        assert!(!ipv6("not:an:ip"));
+        assert!(!ipv6("12345::1")); // group too long
+        assert!(!ipv6("192.168.1.1")); // that's v4
+    }
+
+    #[test]
+    fn btc_address_base58check() {
+        // Satoshi genesis coinbase address (well-known, Base58Check-valid).
+        assert!(btc_address("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"));
+        assert!(!btc_address("1A1zP1eP5QGefi2DMPTfTL5SLmv7Divfna")); // last char flipped
+        assert!(!btc_address("not a bitcoin address xxxxxxxxx"));
+    }
+
+    #[test]
+    fn iccid_round_trip() {
+        // No trustworthy public vector; construct a Luhn-valid 89-prefixed
+        // 19-digit ICCID, confirm acceptance + rejection of a tampered one.
+        let mut seed = 0x0BAD_F00Du64;
+        let mut found = None;
+        for _ in 0..100_000 {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let body: String = (0..17)
+                .map(|i| (b'0' + (seed.rotate_left(i * 3) % 10) as u8) as char)
+                .collect();
+            let cand = format!("89{body}");
+            if iccid(&cand) {
+                found = Some(cand);
+                break;
+            }
+        }
+        let ok = found.expect("should construct a valid ICCID");
+        assert!(iccid(&ok));
+        let mut bad: Vec<char> = ok.chars().collect();
+        let last = bad.len() - 1;
+        bad[last] = if bad[last] == '0' { '1' } else { '0' };
+        assert!(!iccid(&bad.into_iter().collect::<String>()));
     }
 }

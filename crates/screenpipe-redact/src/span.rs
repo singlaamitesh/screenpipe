@@ -136,6 +136,13 @@ pub const KNOWN_SUBTYPES: &[&str] = &[
     "south_africa_id",
     "uk_utr",
     "mexico_curp",
+    "ipv6",
+    "iccid",
+    "btc_address",
+    // format / context only
+    "imsi",
+    "us_passport",
+    "icd10",
     // format / context only (no public checksum)
     "uk_nino",
     "india_pan",

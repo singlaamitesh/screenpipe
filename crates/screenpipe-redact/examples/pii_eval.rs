@@ -187,6 +187,18 @@ fn shape(subtype: &str, r: &mut Rng) -> String {
             let l6: String = (0..6).map(|_| r.upper()).collect();
             format!("{l4}{d6}{l6}{}{}", pick(r, CUSIP_CHARS), r.digit())
         }
+        "ipv6" => (0..8)
+            .map(|i| format!("{}{:x}", if i > 0 { ":" } else { "" }, r.below(65536)))
+            .collect(),
+        "iccid" => format!("89{}", r.digits(17)),
+        // valid base58check can't be brute-forced; use a known-valid address
+        "btc_address" => "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa".to_string(),
+        "imsi" => r.digits(15),
+        "us_passport" => format!("{}{}", r.upper(), r.digits(8)),
+        "icd10" => {
+            let l = (b'A' + r.below(20) as u8) as char;
+            format!("{l}{}{}.{}", r.digit(), r.upper(), r.digits(1))
+        }
         other => panic!("no shape generator for {other}"),
     }
 }
@@ -224,7 +236,11 @@ fn validator(subtype: &str) -> Option<fn(&str) -> bool> {
         "australia_medicare" => nid::australia_medicare,
         "uk_utr" => nid::uk_utr,
         "south_korea_rrn" => nid::south_korea_rrn,
-        // format-only (no checksum): mexico_curp, us_ssn, uk_nino, ...
+        "ipv6" => nid::ipv6,
+        "iccid" => nid::iccid,
+        // format-only (no checksum): btc treated as format here (a valid
+        // base58check address can't be brute-forced), mexico_curp, us_ssn,
+        // uk_nino, imsi, us_passport, icd10, ...
         _ => return None,
     })
 }
@@ -286,6 +302,12 @@ const CASES: &[(&str, &str)] = &[
     ("sweden_personnummer", "personnummer"),
     ("uk_utr", "UTR"),
     ("australia_medicare", "Medicare"),
+    ("ipv6", ""),
+    ("iccid", "ICCID"),
+    ("btc_address", ""),
+    ("imsi", "IMSI"),
+    ("us_passport", "passport"),
+    ("icd10", "diagnosis"),
 ];
 
 const TEMPLATES: &[&str] = &[
