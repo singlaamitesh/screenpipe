@@ -436,6 +436,185 @@ static PATTERNS: Lazy<Vec<Pattern>> = Lazy::new(|| {
             &["medicare"],
             Some(national_id::australia_medicare),
         ),
+        // ---- EU VAT + more national IDs (mostly context-gated digit runs) ----
+        // Distinctive-prefix (no context needed):
+        (
+            r"\bATU\d{8}\b",
+            SpanLabel::Id,
+            Some("austria_vat"),
+            &[],
+            Some(national_id::austria_vat),
+        ),
+        (
+            r"\b756\d{10}\b",
+            SpanLabel::Id,
+            Some("switzerland_ahv"),
+            &[],
+            Some(national_id::switzerland_ahv),
+        ),
+        (
+            r"\b\d{6}/\d{4}\b",
+            SpanLabel::Id,
+            Some("czech_rodne_cislo"),
+            &[],
+            Some(national_id::czech_rodne_cislo),
+        ),
+        (
+            r"\b\d{7}[A-Za-z]{1,2}\b",
+            SpanLabel::Id,
+            Some("ireland_pps"),
+            &["pps", "ppsn", "revenue"],
+            Some(national_id::ireland_pps),
+        ),
+        // Context-gated digit runs (EU VAT):
+        (
+            r"\b\d{9}\b",
+            SpanLabel::Id,
+            Some("germany_vat"),
+            &["ust-id", "umsatzsteuer", "ust-idnr"],
+            Some(national_id::germany_vat),
+        ),
+        (
+            r"\b\d{11}\b",
+            SpanLabel::Id,
+            Some("france_vat"),
+            &["tva", "numero tva", "numéro tva"],
+            Some(national_id::france_vat),
+        ),
+        (
+            r"\b\d{11}\b",
+            SpanLabel::Id,
+            Some("italy_vat"),
+            &["partita iva", "p.iva", "piva"],
+            Some(national_id::italy_vat),
+        ),
+        (
+            r"\b0\d{9}\b",
+            SpanLabel::Id,
+            Some("belgium_vat"),
+            &["btw", "ondernemingsnummer", "entreprise"],
+            Some(national_id::belgium_vat),
+        ),
+        (
+            r"\b\d{10}\b",
+            SpanLabel::Id,
+            Some("poland_nip"),
+            &["nip"],
+            Some(national_id::poland_nip),
+        ),
+        (
+            r"\b\d{8}\b",
+            SpanLabel::Id,
+            Some("denmark_cvr"),
+            &["cvr", "moms"],
+            Some(national_id::denmark_cvr),
+        ),
+        (
+            r"\b\d{9}\b",
+            SpanLabel::Id,
+            Some("greece_afm"),
+            &["afm", "vat"],
+            Some(national_id::greece_afm),
+        ),
+        (
+            r"\b\d{11}\b",
+            SpanLabel::Id,
+            Some("croatia_oib"),
+            &["oib"],
+            Some(national_id::croatia_oib),
+        ),
+        (
+            r"\b\d{9}\b",
+            SpanLabel::Id,
+            Some("portugal_nif"),
+            &["nif", "contribuinte", "nipc"],
+            Some(national_id::portugal_nif),
+        ),
+        (
+            r"\b\d{8}\b",
+            SpanLabel::Id,
+            Some("finland_vat"),
+            &["y-tunnus", "ytunnus", "alv"],
+            Some(national_id::finland_vat),
+        ),
+        (
+            r"\b\d{8}\b",
+            SpanLabel::Id,
+            Some("luxembourg_vat"),
+            &["matricule", "no. tva"],
+            Some(national_id::luxembourg_vat),
+        ),
+        (
+            r"\b\d{12}\b",
+            SpanLabel::Id,
+            Some("sweden_vat"),
+            &["moms", "momsnr"],
+            Some(national_id::sweden_vat),
+        ),
+        // Context-gated digit runs (national IDs):
+        (
+            r"\b\d{10}\b",
+            SpanLabel::Id,
+            Some("austria_svnr"),
+            &["svnr", "sozialversicherung", "versicherungsnummer"],
+            Some(national_id::austria_svnr),
+        ),
+        (
+            r"\b\d{13}\b",
+            SpanLabel::Id,
+            Some("romania_cnp"),
+            &["cnp"],
+            Some(national_id::romania_cnp),
+        ),
+        (
+            r"\b\d{10}\b",
+            SpanLabel::Id,
+            Some("bulgaria_egn"),
+            &["egn"],
+            Some(national_id::bulgaria_egn),
+        ),
+        (
+            r"\b\d{11}\b",
+            SpanLabel::Id,
+            Some("greece_amka"),
+            &["amka"],
+            Some(national_id::greece_amka),
+        ),
+        (
+            r"\b\d{10}\b",
+            SpanLabel::Id,
+            Some("iceland_kennitala"),
+            &["kennitala"],
+            Some(national_id::iceland_kennitala),
+        ),
+        (
+            r"\b\d{11}\b",
+            SpanLabel::Id,
+            Some("estonia_isikukood"),
+            &["isikukood"],
+            Some(national_id::estonia_isikukood),
+        ),
+        (
+            r"\b\d{13}\b",
+            SpanLabel::Id,
+            Some("jmbg"),
+            &["jmbg", "emso", "maticni"],
+            Some(national_id::jmbg),
+        ),
+        (
+            r"\b\d{12}\b",
+            SpanLabel::Id,
+            Some("russia_inn"),
+            &["inn"],
+            Some(national_id::russia_inn),
+        ),
+        (
+            r"\b\d{10}\b",
+            SpanLabel::Id,
+            Some("denmark_cpr"),
+            &["cpr", "personnummer"],
+            Some(national_id::denmark_cpr),
+        ),
         // ---- format/context-only (no public checksum) ----
         // UK NINO — 2 prefix letters + 6 digits + A-D suffix.
         (
@@ -981,7 +1160,11 @@ mod tests {
 
         // Regression guard. Debug builds run ~10x slower than the release
         // target the worker actually uses, so the bound is build-aware.
-        let bound = if cfg!(debug_assertions) { 500_000.0 } else { 50_000.0 };
+        let bound = if cfg!(debug_assertions) {
+            500_000.0
+        } else {
+            50_000.0
+        };
         assert!(
             free_ns < bound && mixed_ns < bound,
             "redact_one regressed: pii-free {free_ns:.0} ns, mixed {mixed_ns:.0} ns"

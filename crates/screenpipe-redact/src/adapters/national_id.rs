@@ -816,9 +816,354 @@ pub fn btc_address(s: &str) -> bool {
     &h2[..4] == checksum
 }
 
+// ---- shared checksum helpers (EU batch) ----
+
+/// Big-number `digits mod m`, computed digit-by-digit.
+fn digits_mod(d: &[u8], m: u64) -> u64 {
+    d.iter().fold(0u64, |r, &x| (r * 10 + x as u64) % m)
+}
+
+/// ISO 7064 MOD 11,10 check digit over a payload (Germany Steuer-ID/USt,
+/// Croatia OIB, ...).
+fn iso7064_mod11_10(payload: &[u8]) -> u32 {
+    let mut p = 10u32;
+    for &x in payload {
+        let mut s = (x as u32 + p) % 10;
+        if s == 0 {
+            s = 10;
+        }
+        p = (s * 2) % 11;
+    }
+    (11 - p) % 10
+}
+
+fn wsum(d: &[u8], w: &[u32]) -> u32 {
+    d.iter().zip(w).map(|(&x, &wt)| x as u32 * wt).sum()
+}
+
+/// Germany VAT (USt-IdNr): 9 digits, first ≠ 0, ISO 7064 MOD 11,10.
+pub fn germany_vat(s: &str) -> bool {
+    let d = digits(s);
+    d.len() == 9 && d[0] != 0 && iso7064_mod11_10(&d[..8]) == d[8] as u32
+}
+
+/// France TVA: 2 key digits + 9-digit SIREN; key = (12 + 3·(SIREN mod 97)) mod 97.
+pub fn france_vat(s: &str) -> bool {
+    let d = digits(s);
+    if d.len() != 11 {
+        return false;
+    }
+    let key = d[0] as u64 * 10 + d[1] as u64;
+    let siren = &d[2..];
+    key == (12 + 3 * digits_mod(siren, 97)) % 97 && luhn_slice(siren)
+}
+
+/// Italy Partita IVA: 11 digits, Luhn.
+pub fn italy_vat(s: &str) -> bool {
+    let d = digits(s);
+    d.len() == 11 && luhn_slice(&d)
+}
+
+/// Belgium VAT / enterprise number: 10 digits, last 2 = 97 − (first8 mod 97).
+pub fn belgium_vat(s: &str) -> bool {
+    let d = digits(s);
+    if d.len() != 10 {
+        return false;
+    }
+    let check = d[8] as u64 * 10 + d[9] as u64;
+    check == 97 - digits_mod(&d[..8], 97)
+}
+
+/// Austria UID (ATU): 8 digits, Luhn-like over first 7 with the +4 constant.
+pub fn austria_vat(s: &str) -> bool {
+    let d = digits(s);
+    if d.len() != 8 {
+        return false;
+    }
+    let mut z = 0u32;
+    for (i, &x) in d[..7].iter().enumerate() {
+        let v = x as u32;
+        if i % 2 == 1 {
+            let doubled = v * 2;
+            z += doubled / 10 + doubled % 10;
+        } else {
+            z += v;
+        }
+    }
+    (10 - (z + 4) % 10) % 10 == d[7] as u32
+}
+
+/// Poland NIP (VAT): 10 digits, weighted mod-11.
+pub fn poland_nip(s: &str) -> bool {
+    let d = digits(s);
+    if d.len() != 10 {
+        return false;
+    }
+    let r = wsum(&d[..9], &[6, 5, 7, 2, 3, 4, 5, 6, 7]) % 11;
+    r != 10 && r == d[9] as u32
+}
+
+/// Denmark CVR (VAT): 8 digits, weighted mod-11 ≡ 0.
+pub fn denmark_cvr(s: &str) -> bool {
+    let d = digits(s);
+    d.len() == 8 && wsum(&d, &[2, 7, 6, 5, 4, 3, 2, 1]).is_multiple_of(11)
+}
+
+/// Greece AFM (VAT): 9 digits, powers-of-two weighted mod-11.
+pub fn greece_afm(s: &str) -> bool {
+    let d = digits(s);
+    if d.len() != 9 {
+        return false;
+    }
+    (wsum(&d[..8], &[256, 128, 64, 32, 16, 8, 4, 2]) % 11) % 10 == d[8] as u32
+}
+
+/// Croatia OIB (also VAT): 11 digits, ISO 7064 MOD 11,10.
+pub fn croatia_oib(s: &str) -> bool {
+    let d = digits(s);
+    d.len() == 11 && iso7064_mod11_10(&d[..10]) == d[10] as u32
+}
+
+/// Portugal NIF (also VAT): 9 digits, mod-11.
+pub fn portugal_nif(s: &str) -> bool {
+    let d = digits(s);
+    if d.len() != 9 {
+        return false;
+    }
+    let r = wsum(&d[..8], &[9, 8, 7, 6, 5, 4, 3, 2]) % 11;
+    let check = if r < 2 { 0 } else { 11 - r };
+    check == d[8] as u32
+}
+
+/// Finland Y-tunnus (VAT): 8 digits, weighted mod-11.
+pub fn finland_vat(s: &str) -> bool {
+    let d = digits(s);
+    if d.len() != 8 {
+        return false;
+    }
+    let r = wsum(&d[..7], &[7, 9, 10, 5, 8, 4, 2]) % 11;
+    if r == 1 {
+        return false;
+    }
+    let check = if r == 0 { 0 } else { 11 - r };
+    check == d[7] as u32
+}
+
+/// Luxembourg VAT: 8 digits, last 2 = first6 mod 89.
+pub fn luxembourg_vat(s: &str) -> bool {
+    let d = digits(s);
+    if d.len() != 8 {
+        return false;
+    }
+    (d[6] as u64 * 10 + d[7] as u64) == digits_mod(&d[..6], 89)
+}
+
+/// Sweden VAT: 12 digits, trailing "01", Luhn over the 10-digit org core.
+pub fn sweden_vat(s: &str) -> bool {
+    let d = digits(s);
+    d.len() == 12 && d[10] == 0 && d[11] == 1 && luhn_slice(&d[..10])
+}
+
+const IE_ALPHABET: &[u8; 23] = b"WABCDEFGHIJKLMNOPQRSTUV";
+
+/// Ireland PPS number (and VAT): 7 digits + check letter (+ optional 2nd
+/// letter), mod-23.
+pub fn ireland_pps(s: &str) -> bool {
+    let c: Vec<u8> = s
+        .bytes()
+        .filter(|b| b.is_ascii_alphanumeric())
+        .map(|b| b.to_ascii_uppercase())
+        .collect();
+    if !(8..=9).contains(&c.len()) || !c[..7].iter().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    let mut sum = 0u32;
+    for (i, &b) in c[..7].iter().enumerate() {
+        sum += (b - b'0') as u32 * (8 - i as u32);
+    }
+    if c.len() == 9 {
+        // second letter weight 9, A=1..
+        if !c[8].is_ascii_alphabetic() {
+            return false;
+        }
+        sum += (c[8] - b'A' + 1) as u32 * 9;
+    }
+    let check = c[7];
+    check.is_ascii_alphabetic() && IE_ALPHABET[(sum % 23) as usize] == check
+}
+
+/// Switzerland AHV/AVS: 13 digits, prefix 756, EAN-13 mod-10.
+pub fn switzerland_ahv(s: &str) -> bool {
+    let d = digits(s);
+    if d.len() != 13 || d[0] != 7 || d[1] != 5 || d[2] != 6 {
+        return false;
+    }
+    let mut sum = 0u32;
+    for (i, &x) in d[..12].iter().enumerate() {
+        sum += x as u32 * if i % 2 == 0 { 1 } else { 3 };
+    }
+    (10 - sum % 10) % 10 == d[12] as u32
+}
+
+/// Austria SVNR: 10 digits, weighted mod-11 (check digit at position 4).
+pub fn austria_svnr(s: &str) -> bool {
+    let d = digits(s);
+    if d.len() != 10 {
+        return false;
+    }
+    let r = wsum(&d, &[3, 7, 9, 0, 5, 8, 4, 2, 1, 6]) % 11;
+    r != 10 && r == d[3] as u32
+}
+
+/// Romania CNP: 13 digits, fixed-key mod-11.
+pub fn romania_cnp(s: &str) -> bool {
+    let d = digits(s);
+    if d.len() != 13 {
+        return false;
+    }
+    let r = wsum(&d[..12], &[2, 7, 9, 1, 4, 6, 3, 5, 8, 2, 7, 9]) % 11;
+    let check = if r == 10 { 1 } else { r };
+    check == d[12] as u32
+}
+
+/// Bulgaria EGN: 10 digits, weighted mod-11.
+pub fn bulgaria_egn(s: &str) -> bool {
+    let d = digits(s);
+    if d.len() != 10 {
+        return false;
+    }
+    let r = wsum(&d[..9], &[2, 4, 8, 5, 10, 9, 7, 3, 6]) % 11;
+    let check = if r == 10 { 0 } else { r };
+    check == d[9] as u32
+}
+
+/// Greece AMKA: 11 digits, Luhn.
+pub fn greece_amka(s: &str) -> bool {
+    let d = digits(s);
+    d.len() == 11 && luhn_slice(&d)
+}
+
+/// Iceland kennitala: 10 digits, mod-11 (9th is check, 10th is century).
+pub fn iceland_kennitala(s: &str) -> bool {
+    let d = digits(s);
+    if d.len() != 10 {
+        return false;
+    }
+    let r = wsum(&d[..8], &[3, 2, 7, 6, 5, 4, 3, 2]) % 11;
+    let check = (11 - r) % 11;
+    check != 10 && check == d[8] as u32
+}
+
+/// Estonia/Lithuania personal code: 11 digits, two-stage mod-11.
+pub fn estonia_isikukood(s: &str) -> bool {
+    let d = digits(s);
+    if d.len() != 11 {
+        return false;
+    }
+    let r1 = wsum(&d[..10], &[1, 2, 3, 4, 5, 6, 7, 8, 9, 1]) % 11;
+    let check = if r1 < 10 {
+        r1
+    } else {
+        let r2 = wsum(&d[..10], &[3, 4, 5, 6, 7, 8, 9, 1, 2, 3]) % 11;
+        if r2 < 10 {
+            r2
+        } else {
+            0
+        }
+    };
+    check == d[10] as u32
+}
+
+/// Slovenia EMŠO / ex-Yugoslav JMBG: 13 digits, mod-11.
+pub fn jmbg(s: &str) -> bool {
+    let d = digits(s);
+    if d.len() != 13 {
+        return false;
+    }
+    let s = 7 * (d[0] + d[6]) as u32
+        + 6 * (d[1] + d[7]) as u32
+        + 5 * (d[2] + d[8]) as u32
+        + 4 * (d[3] + d[9]) as u32
+        + 3 * (d[4] + d[10]) as u32
+        + 2 * (d[5] + d[11]) as u32;
+    let m = 11 - (s % 11);
+    let check = match m {
+        11 => 0,
+        10 => return false,
+        v => v,
+    };
+    check == d[12] as u32
+}
+
+/// Russia INN (individual, 12 digits): two trailing mod-11 check digits.
+pub fn russia_inn(s: &str) -> bool {
+    let d = digits(s);
+    if d.len() != 12 {
+        return false;
+    }
+    let n11 = wsum(&d[..10], &[7, 2, 4, 10, 3, 5, 9, 4, 6, 8]) % 11 % 10;
+    let n12 = wsum(&d[..11], &[3, 7, 2, 4, 10, 3, 5, 9, 4, 6, 8]) % 11 % 10;
+    n11 == d[10] as u32 && n12 == d[11] as u32
+}
+
+/// Czech/Slovak rodné číslo: 10 digits divisible by 11 (1954+ form).
+pub fn czech_rodne_cislo(s: &str) -> bool {
+    let d = digits(s);
+    d.len() == 10 && digits_mod(&d, 11) == 0
+}
+
+/// Denmark CPR: 10 digits, legacy mod-11. Soft (modern numbers can fail),
+/// so use only with context.
+pub fn denmark_cpr(s: &str) -> bool {
+    let d = digits(s);
+    d.len() == 10 && wsum(&d, &[4, 3, 2, 7, 6, 5, 4, 3, 2, 1]).is_multiple_of(11)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn eu_id_vectors() {
+        // Machine-verified documentation values (the research agent traced
+        // each against a reference implementation). Each anchors one
+        // algorithm; a one-edit negative guards the check.
+        assert!(germany_vat("136695976"));
+        assert!(!germany_vat("136695975"));
+        assert!(france_vat("83404833048"));
+        assert!(!france_vat("83404833047"));
+        assert!(italy_vat("00743110157"));
+        assert!(!italy_vat("00743110158"));
+        assert!(belgium_vat("0776091951"));
+        assert!(!belgium_vat("0776091952"));
+        assert!(austria_vat("37675002"));
+        assert!(!austria_vat("37675003"));
+        assert!(poland_nip("5260001246"));
+        assert!(denmark_cvr("13585628"));
+        assert!(!denmark_cvr("13585629"));
+        assert!(greece_afm("094014201"));
+        assert!(croatia_oib("33392005961"));
+        assert!(!croatia_oib("33392005962"));
+        assert!(portugal_nif("507306244"));
+        assert!(!portugal_nif("507306245"));
+        assert!(ireland_pps("1234567FA"));
+        assert!(!ireland_pps("1234567XA"));
+        assert!(switzerland_ahv("7569217076985"));
+        assert!(!switzerland_ahv("7569217076986"));
+        assert!(austria_svnr("1237010180"));
+        assert!(romania_cnp("1800101221144"));
+        assert!(!romania_cnp("1800101221145"));
+        assert!(bulgaria_egn("7501020018"));
+        assert!(greece_amka("01013099997"));
+        assert!(iceland_kennitala("1203751219"));
+        assert!(estonia_isikukood("37605030299"));
+        assert!(jmbg("0101006500006"));
+        assert!(!jmbg("0101006500007"));
+        assert!(russia_inn("500905358100"));
+        assert!(!russia_inn("500905358101"));
+        assert!(czech_rodne_cislo("7103192745"));
+        assert!(denmark_cpr("2512484916"));
+    }
 
     #[test]
     fn govt_id_candidate_vectors() {

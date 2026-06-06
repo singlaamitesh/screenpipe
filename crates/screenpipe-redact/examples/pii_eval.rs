@@ -199,6 +199,25 @@ fn shape(subtype: &str, r: &mut Rng) -> String {
             let l = (b'A' + r.below(20) as u8) as char;
             format!("{l}{}{}.{}", r.digit(), r.upper(), r.digits(1))
         }
+        // ---- EU ----
+        "germany_vat" | "greece_afm" | "portugal_nif" => {
+            format!("{}{}", (b'1' + r.below(9) as u8) as char, r.digits(8))
+        }
+        "france_vat" | "italy_vat" | "croatia_oib" | "greece_amka" | "estonia_isikukood" => {
+            r.digits(11)
+        }
+        "poland_nip" | "austria_svnr" | "bulgaria_egn" | "iceland_kennitala" | "denmark_cpr" => {
+            r.digits(10)
+        }
+        "denmark_cvr" | "finland_vat" | "luxembourg_vat" => r.digits(8),
+        "romania_cnp" | "jmbg" => r.digits(13),
+        "russia_inn" => r.digits(12),
+        "belgium_vat" => format!("0{}", r.digits(9)),
+        "sweden_vat" => format!("{}01", r.digits(10)),
+        "austria_vat" => format!("ATU{}", r.digits(8)),
+        "switzerland_ahv" => format!("756{}", r.digits(10)),
+        "czech_rodne_cislo" => format!("{}/{}", r.digits(6), r.digits(4)),
+        "ireland_pps" => format!("{}{}", r.digits(7), r.upper()),
         other => panic!("no shape generator for {other}"),
     }
 }
@@ -238,6 +257,31 @@ fn validator(subtype: &str) -> Option<fn(&str) -> bool> {
         "south_korea_rrn" => nid::south_korea_rrn,
         "ipv6" => nid::ipv6,
         "iccid" => nid::iccid,
+        "germany_vat" => nid::germany_vat,
+        "france_vat" => nid::france_vat,
+        "italy_vat" => nid::italy_vat,
+        "belgium_vat" => nid::belgium_vat,
+        "austria_vat" => nid::austria_vat,
+        "poland_nip" => nid::poland_nip,
+        "denmark_cvr" => nid::denmark_cvr,
+        "greece_afm" => nid::greece_afm,
+        "croatia_oib" => nid::croatia_oib,
+        "portugal_nif" => nid::portugal_nif,
+        "finland_vat" => nid::finland_vat,
+        "luxembourg_vat" => nid::luxembourg_vat,
+        "sweden_vat" => nid::sweden_vat,
+        "ireland_pps" => nid::ireland_pps,
+        "switzerland_ahv" => nid::switzerland_ahv,
+        "austria_svnr" => nid::austria_svnr,
+        "romania_cnp" => nid::romania_cnp,
+        "bulgaria_egn" => nid::bulgaria_egn,
+        "greece_amka" => nid::greece_amka,
+        "iceland_kennitala" => nid::iceland_kennitala,
+        "estonia_isikukood" => nid::estonia_isikukood,
+        "jmbg" => nid::jmbg,
+        "russia_inn" => nid::russia_inn,
+        "czech_rodne_cislo" => nid::czech_rodne_cislo,
+        "denmark_cpr" => nid::denmark_cpr,
         // format-only (no checksum): btc treated as format here (a valid
         // base58check address can't be brute-forced), mexico_curp, us_ssn,
         // uk_nino, imsi, us_passport, icd10, ...
@@ -308,6 +352,31 @@ const CASES: &[(&str, &str)] = &[
     ("imsi", "IMSI"),
     ("us_passport", "passport"),
     ("icd10", "diagnosis"),
+    ("germany_vat", "USt-IdNr"),
+    ("france_vat", "TVA"),
+    ("italy_vat", "Partita IVA"),
+    ("belgium_vat", "BTW"),
+    ("austria_vat", ""),
+    ("poland_nip", "NIP"),
+    ("denmark_cvr", "CVR"),
+    ("greece_afm", "AFM"),
+    ("croatia_oib", "OIB"),
+    ("portugal_nif", "NIF"),
+    ("finland_vat", "Y-tunnus"),
+    ("luxembourg_vat", "matricule"),
+    ("sweden_vat", "moms"),
+    ("ireland_pps", "PPS"),
+    ("switzerland_ahv", ""),
+    ("austria_svnr", "SVNR"),
+    ("romania_cnp", "CNP"),
+    ("bulgaria_egn", "EGN"),
+    ("greece_amka", "AMKA"),
+    ("iceland_kennitala", "kennitala"),
+    ("estonia_isikukood", "isikukood"),
+    ("jmbg", "JMBG"),
+    ("russia_inn", "INN"),
+    ("czech_rodne_cislo", ""),
+    ("denmark_cpr", "CPR"),
 ];
 
 const TEMPLATES: &[&str] = &[
