@@ -193,6 +193,9 @@ fn shape(subtype: &str, r: &mut Rng) -> String {
         "iccid" => format!("89{}", r.digits(17)),
         // valid base58check can't be brute-forced; use a known-valid address
         "btc_address" => "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa".to_string(),
+        "litecoin_address" => "LdP8Qox1VAhCzLJNqrr74YovaWYyNBUWvL".to_string(),
+        // all-lowercase eth address has no checksum nibbles, always valid
+        "ethereum_address" => format!("0x{}", (0..40).map(|_| r.hex()).collect::<String>()),
         "imsi" => r.digits(15),
         "us_passport" => format!("{}{}", r.upper(), r.digits(8)),
         "icd10" => {
@@ -403,9 +406,10 @@ fn validator(subtype: &str) -> Option<fn(&str) -> bool> {
         "kuwait_civil_id" => nid::kuwait_civil_id,
         "ecuador_cedula" => nid::ecuador_cedula,
         "dominican_cedula" => nid::dominican_cedula,
-        // format-only (no checksum): btc treated as format here (a valid
-        // base58check address can't be brute-forced), mexico_curp, us_ssn,
-        // uk_nino, imsi, us_passport, icd10, ...
+        "ethereum_address" => nid::eth_address,
+        // format-only (no checksum): btc + litecoin treated as format here (a
+        // valid base58check address can't be brute-forced), mexico_curp,
+        // us_ssn, uk_nino, imsi, us_passport, icd10, ...
         _ => return None,
     })
 }
@@ -470,6 +474,8 @@ const CASES: &[(&str, &str)] = &[
     ("ipv6", ""),
     ("iccid", "ICCID"),
     ("btc_address", ""),
+    ("litecoin_address", ""),
+    ("ethereum_address", ""),
     ("imsi", "IMSI"),
     ("us_passport", "passport"),
     ("icd10", "diagnosis"),

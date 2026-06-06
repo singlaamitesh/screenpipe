@@ -771,17 +771,12 @@ pub fn iccid(s: &str) -> bool {
     luhn_slice(&d)
 }
 
-/// Bitcoin legacy address (P2PKH `1…` / P2SH `3…`): Base58Check — the
-/// 4-byte trailer must equal the first 4 bytes of double-SHA-256 over the
-/// version+payload. Bech32 (`bc1…`) is deferred (different checksum).
-pub fn btc_address(s: &str) -> bool {
+/// Base58Check: decode the base58 string and verify the 4-byte trailer
+/// equals the first 4 bytes of double-SHA-256 over version+payload. Shared
+/// by Bitcoin and Litecoin legacy addresses.
+fn base58check_ok(s: &str) -> bool {
     use sha2::{Digest, Sha256};
-    let s = s.trim();
-    if !(26..=35).contains(&s.len()) || !(s.starts_with('1') || s.starts_with('3')) {
-        return false;
-    }
     const ALPHABET: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-    // base58 decode into a big-endian byte vector
     let mut bytes: Vec<u8> = vec![0];
     for ch in s.bytes() {
         let val = match ALPHABET.iter().position(|&c| c == ch) {
@@ -799,7 +794,6 @@ pub fn btc_address(s: &str) -> bool {
             carry >>= 8;
         }
     }
-    // leading '1' chars are leading zero bytes
     for ch in s.bytes() {
         if ch == b'1' {
             bytes.push(0);
@@ -814,6 +808,53 @@ pub fn btc_address(s: &str) -> bool {
     let (payload, checksum) = bytes.split_at(bytes.len() - 4);
     let h2 = Sha256::digest(Sha256::digest(payload));
     &h2[..4] == checksum
+}
+
+/// Bitcoin legacy address (P2PKH `1…` / P2SH `3…`), Base58Check. Bech32
+/// (`bc1…`) is deferred (different checksum).
+pub fn btc_address(s: &str) -> bool {
+    let s = s.trim();
+    (26..=35).contains(&s.len()) && (s.starts_with('1') || s.starts_with('3')) && base58check_ok(s)
+}
+
+/// Litecoin legacy address (`L…` / `M…`), Base58Check.
+pub fn litecoin_address(s: &str) -> bool {
+    let s = s.trim();
+    (26..=35).contains(&s.len()) && (s.starts_with('L') || s.starts_with('M')) && base58check_ok(s)
+}
+
+/// Ethereum address (EIP-55): `0x` + 40 hex. All-one-case = checksum
+/// absent (accepted as a well-formed address); mixed-case must satisfy the
+/// Keccak-256 capitalization rule exactly.
+pub fn eth_address(s: &str) -> bool {
+    use sha3::{Digest, Keccak256};
+    let h = s
+        .strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+        .unwrap_or(s);
+    if h.len() != 40 || !h.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return false;
+    }
+    let has_upper = h.bytes().any(|b| b.is_ascii_uppercase());
+    let has_lower = h.bytes().any(|b| b.is_ascii_lowercase());
+    if !(has_upper && has_lower) {
+        return true; // checksum absent — accept the shape
+    }
+    let lower = h.to_ascii_lowercase();
+    let hash = Keccak256::digest(lower.as_bytes());
+    for (i, ch) in h.bytes().enumerate() {
+        if ch.is_ascii_alphabetic() {
+            let nibble = if i % 2 == 0 {
+                hash[i / 2] >> 4
+            } else {
+                hash[i / 2] & 0xf
+            };
+            if (nibble >= 8) != ch.is_ascii_uppercase() {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 // ---- shared checksum helpers (EU batch) ----
@@ -1655,6 +1696,22 @@ pub fn dominican_cedula(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crypto_vectors() {
+        // EIP-55 spec test vectors (mixed, all-caps, all-lower).
+        assert!(eth_address("0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed"));
+        assert!(eth_address("0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359"));
+        assert!(eth_address("0x52908400098527886E0F7030069857D2E4169EE7"));
+        assert!(eth_address("0xde709f2102306220921060314715629080e2fb77"));
+        // mixed-case with a flipped letter → fails the Keccak rule.
+        assert!(!eth_address("0x5aaeb6053F3E94C9b9A09f33669435E7Ef1BeAed"));
+        assert!(!eth_address("0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAe")); // 39 hex
+                                                                            // Base58Check.
+        assert!(btc_address("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"));
+        assert!(litecoin_address("LdP8Qox1VAhCzLJNqrr74YovaWYyNBUWvL"));
+        assert!(!litecoin_address("LdP8Qox1VAhCzLJNqrr74YovaWYyNBUWvX"));
+    }
 
     #[test]
     fn country_batch2_vectors() {

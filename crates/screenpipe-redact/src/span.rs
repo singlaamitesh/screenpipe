@@ -139,6 +139,8 @@ pub const KNOWN_SUBTYPES: &[&str] = &[
     "ipv6",
     "iccid",
     "btc_address",
+    "litecoin_address",
+    "ethereum_address",
     // EU VAT + national IDs
     "germany_vat",
     "france_vat",

@@ -1254,6 +1254,22 @@ static PATTERNS: Lazy<Vec<Pattern>> = Lazy::new(|| {
             &[],
             Some(national_id::btc_address),
         ),
+        // Litecoin legacy address — Base58Check (L.../M...).
+        (
+            r"\b[LM][1-9A-HJ-NP-Za-km-z]{25,34}\b",
+            SpanLabel::Id,
+            Some("litecoin_address"),
+            &[],
+            Some(national_id::litecoin_address),
+        ),
+        // Ethereum address — 0x + 40 hex, EIP-55 Keccak checksum.
+        (
+            r"\b0x[0-9a-fA-F]{40}\b",
+            SpanLabel::Id,
+            Some("ethereum_address"),
+            &[],
+            Some(national_id::eth_address),
+        ),
         // IMSI — 15 digits, context-gated (shares the shape with IMEI).
         (r"\b\d{15}\b", SpanLabel::Id, Some("imsi"), &["imsi"], None),
         // US passport — 1 alnum + 8 digits, context-gated.
