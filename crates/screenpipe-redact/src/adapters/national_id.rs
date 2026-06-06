@@ -1119,9 +1119,356 @@ pub fn denmark_cpr(s: &str) -> bool {
     d.len() == 10 && wsum(&d, &[4, 3, 2, 7, 6, 5, 4, 3, 2, 1]).is_multiple_of(11)
 }
 
+// ---- Asia / Americas / Middle East ----
+
+/// Singapore NRIC/FIN: prefix [STFGM] + 7 digits + check letter.
+pub fn singapore_nric(s: &str) -> bool {
+    let c: Vec<u8> = s
+        .bytes()
+        .filter(|b| b.is_ascii_alphanumeric())
+        .map(|b| b.to_ascii_uppercase())
+        .collect();
+    if c.len() != 9 || !c[1..8].iter().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    let prefix = c[0];
+    let offset = match prefix {
+        b'S' | b'F' => 0u32,
+        b'T' | b'G' => 4,
+        _ => return false, // M-series table unverified; skip
+    };
+    let w = [2u32, 7, 6, 5, 4, 3, 2];
+    let sum: u32 = c[1..8]
+        .iter()
+        .zip(w)
+        .map(|(&b, wt)| (b - b'0') as u32 * wt)
+        .sum();
+    let r = ((sum + offset) % 11) as usize;
+    let table: &[u8; 11] = if prefix == b'S' || prefix == b'T' {
+        b"JZIHGFEDCBA"
+    } else {
+        b"XWUTRQPNMLK"
+    };
+    table[r] == c[8]
+}
+
+/// Hong Kong HKID: 1-2 letters + 6 digits + check (0-9 or A), mod-11.
+pub fn hong_kong_hkid(s: &str) -> bool {
+    let c: Vec<u8> = s
+        .bytes()
+        .filter(|b| b.is_ascii_alphanumeric())
+        .map(|b| b.to_ascii_uppercase())
+        .collect();
+    if !(8..=9).contains(&c.len()) {
+        return false;
+    }
+    let (letters, rest) = c.split_at(c.len() - 7);
+    if !rest[..6].iter().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    // pad to two letter slots with a leading space (value 36)
+    let mut slots = [36u32, 36];
+    for (i, &l) in letters.iter().enumerate() {
+        if !l.is_ascii_alphabetic() {
+            return false;
+        }
+        slots[2 - letters.len() + i] = (l - b'A') as u32 + 10;
+    }
+    let w = [9u32, 8, 7, 6, 5, 4, 3, 2];
+    let mut sum = slots[0] * w[0] + slots[1] * w[1];
+    for (i, &b) in rest[..6].iter().enumerate() {
+        sum += (b - b'0') as u32 * w[i + 2];
+    }
+    let check = (11 - sum % 11) % 11;
+    let expect = if check == 10 {
+        b'A'
+    } else {
+        b'0' + check as u8
+    };
+    expect == rest[6]
+}
+
+/// Taiwan national ID: letter + 9 digits, letter→2-digit + weighted mod-10.
+pub fn taiwan_id(s: &str) -> bool {
+    let c: Vec<u8> = s
+        .bytes()
+        .filter(|b| b.is_ascii_alphanumeric())
+        .map(|b| b.to_ascii_uppercase())
+        .collect();
+    if c.len() != 10 || !c[0].is_ascii_alphabetic() || !c[1..].iter().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    // area letter -> two-digit value (irregular official table)
+    let val: u32 = match c[0] {
+        b'A' => 10,
+        b'B' => 11,
+        b'C' => 12,
+        b'D' => 13,
+        b'E' => 14,
+        b'F' => 15,
+        b'G' => 16,
+        b'H' => 17,
+        b'I' => 34,
+        b'J' => 18,
+        b'K' => 19,
+        b'L' => 20,
+        b'M' => 21,
+        b'N' => 22,
+        b'O' => 35,
+        b'P' => 23,
+        b'Q' => 24,
+        b'R' => 25,
+        b'S' => 26,
+        b'T' => 27,
+        b'U' => 28,
+        b'V' => 29,
+        b'W' => 32,
+        b'X' => 30,
+        b'Y' => 31,
+        b'Z' => 33,
+        _ => return false,
+    };
+    let (n1, n2) = (val / 10, val % 10);
+    let w = [8u32, 7, 6, 5, 4, 3, 2, 1];
+    let mut sum = n1 + n2 * 9;
+    for (i, &b) in c[1..9].iter().enumerate() {
+        sum += (b - b'0') as u32 * w[i];
+    }
+    sum += (c[9] - b'0') as u32; // check digit weight 1
+    sum.is_multiple_of(10)
+}
+
+/// Japan My Number: 12 digits, weighted mod-11.
+pub fn japan_my_number(s: &str) -> bool {
+    let d = digits(s);
+    if d.len() != 12 {
+        return false;
+    }
+    let mut sum = 0u32;
+    for (i, &x) in d[..11].iter().enumerate() {
+        let n = 11 - i as u32;
+        let q = if n <= 6 { n + 1 } else { n - 5 };
+        sum += x as u32 * q;
+    }
+    let r = sum % 11;
+    let check = if r <= 1 { 0 } else { 11 - r };
+    check == d[11] as u32
+}
+
+/// Thailand national ID: 13 digits, weighted mod-11.
+pub fn thailand_national_id(s: &str) -> bool {
+    let d = digits(s);
+    if d.len() != 13 {
+        return false;
+    }
+    let w = [13u32, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2];
+    let r = wsum(&d[..12], &w) % 11;
+    (11 - r) % 10 == d[12] as u32
+}
+
+/// New Zealand IRD: 8-9 digits, weighted mod-11 (with secondary weights).
+pub fn new_zealand_ird(s: &str) -> bool {
+    let d = digits(s);
+    if !(8..=9).contains(&d.len()) {
+        return false;
+    }
+    let check = *d.last().unwrap() as u32;
+    let mut base = d[..d.len() - 1].to_vec();
+    while base.len() < 8 {
+        base.insert(0, 0);
+    }
+    if base.len() != 8 {
+        return false;
+    }
+    let calc = |w: &[u32]| {
+        let r = wsum(&base, w) % 11;
+        if r == 0 {
+            0
+        } else {
+            11 - r
+        }
+    };
+    let mut cd = calc(&[3, 2, 7, 6, 5, 4, 3, 2]);
+    if cd == 10 {
+        cd = calc(&[7, 4, 3, 2, 5, 2, 7, 6]);
+        if cd == 10 {
+            return false;
+        }
+    }
+    cd == check
+}
+
+/// Brazil CNPJ (company): 14 digits, two mod-11 check digits.
+pub fn brazil_cnpj(s: &str) -> bool {
+    let d = digits(s);
+    if d.len() != 14 {
+        return false;
+    }
+    let dv = |slice: &[u8], w: &[u32]| {
+        let r = wsum(slice, w) % 11;
+        if r < 2 {
+            0
+        } else {
+            11 - r
+        }
+    };
+    dv(&d[..12], &[5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]) == d[12] as u32
+        && dv(&d[..13], &[6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]) == d[13] as u32
+}
+
+/// Chile RUT/RUN: body + check (digit or K), mod-11.
+pub fn chile_rut(s: &str) -> bool {
+    let c: Vec<u8> = s
+        .bytes()
+        .filter(|b| b.is_ascii_alphanumeric())
+        .map(|b| b.to_ascii_uppercase())
+        .collect();
+    if c.len() < 2 {
+        return false;
+    }
+    let (body, check) = c.split_at(c.len() - 1);
+    if !body.iter().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    let mut sum = 0u32;
+    for (i, &b) in body.iter().rev().enumerate() {
+        sum += (b - b'0') as u32 * (2 + (i as u32 % 6));
+    }
+    let r = 11 - (sum % 11);
+    let expect = match r {
+        11 => b'0',
+        10 => b'K',
+        v => b'0' + v as u8,
+    };
+    expect == check[0]
+}
+
+/// Argentina CUIT/CUIL: 11 digits, mod-11.
+pub fn argentina_cuit(s: &str) -> bool {
+    let d = digits(s);
+    if d.len() != 11 {
+        return false;
+    }
+    let r = wsum(&d[..10], &[5, 4, 3, 2, 7, 6, 5, 4, 3, 2]) % 11;
+    let check = match 11 - r {
+        11 => 0,
+        10 => 9,
+        v => v,
+    };
+    check == d[10] as u32
+}
+
+/// Colombia NIT: body + check, prime-weighted mod-11.
+pub fn colombia_nit(s: &str) -> bool {
+    let d = digits(s);
+    if !(7..=16).contains(&d.len()) {
+        return false;
+    }
+    let (body, check) = d.split_at(d.len() - 1);
+    let w = [3u32, 7, 13, 17, 19, 23, 29, 37, 41, 43, 47, 53, 59, 67, 71];
+    let mut sum = 0u32;
+    for (i, &x) in body.iter().rev().enumerate() {
+        sum += x as u32 * w[i];
+    }
+    let m = sum % 11;
+    let dv = if m < 2 { m } else { 11 - m };
+    dv == check[0] as u32
+}
+
+/// Uruguay CI: up to 7 body digits + check, weighted mod-10.
+pub fn uruguay_ci(s: &str) -> bool {
+    let mut d = digits(s);
+    if d.len() < 2 || d.len() > 8 {
+        return false;
+    }
+    let check = d.pop().unwrap() as u32;
+    while d.len() < 7 {
+        d.insert(0, 0);
+    }
+    let sum = wsum(&d, &[2, 9, 8, 7, 6, 3, 4]);
+    (10 - sum % 10) % 10 == check
+}
+
+/// Israel Teudat Zehut: 9 digits (left-padded), Luhn.
+pub fn israel_teudat_zehut(s: &str) -> bool {
+    let mut d = digits(s);
+    if d.is_empty() || d.len() > 9 {
+        return false;
+    }
+    while d.len() < 9 {
+        d.insert(0, 0);
+    }
+    luhn_slice(&d)
+}
+
+/// UAE Emirates ID: 15 digits, prefix 784, Luhn.
+pub fn uae_emirates_id(s: &str) -> bool {
+    let d = digits(s);
+    d.len() == 15 && d[0] == 7 && d[1] == 8 && d[2] == 4 && luhn_slice(&d)
+}
+
+/// Saudi/Iqama national ID: 10 digits, first 1/2, Luhn.
+pub fn saudi_arabia_id(s: &str) -> bool {
+    let d = digits(s);
+    d.len() == 10 && (d[0] == 1 || d[0] == 2) && luhn_slice(&d)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn asia_americas_vectors() {
+        assert!(singapore_nric("S0000001I"));
+        assert!(singapore_nric("S0000003E"));
+        assert!(!singapore_nric("S0000001A"));
+        assert!(hong_kong_hkid("G123456A")); // G123456(A)
+        assert!(!hong_kong_hkid("G123456B"));
+        assert!(taiwan_id("A123456789"));
+        assert!(taiwan_id("G112233445"));
+        assert!(!taiwan_id("A123456788"));
+        assert!(new_zealand_ird("49091850"));
+        assert!(!new_zealand_ird("49091851"));
+        assert!(brazil_cnpj("11222333000181"));
+        assert!(!brazil_cnpj("11222333000182"));
+        assert!(chile_rut("123456785")); // 12.345.678-5
+        assert!(!chile_rut("123456784"));
+        assert!(uruguay_ci("12345672")); // 1.234.567-2
+        assert!(!uruguay_ci("12345673"));
+        assert!(israel_teudat_zehut("000000018"));
+        assert!(!israel_teudat_zehut("000000019"));
+        // VERIFY-flagged algorithms (no trustworthy public vector): prove
+        // non-degenerate by constructing a value each validator accepts.
+        for (v, len) in [
+            (japan_my_number as fn(&str) -> bool, 12usize),
+            (thailand_national_id, 13),
+            (argentina_cuit, 11),
+            (colombia_nit, 10),
+            (uae_emirates_id, 15),
+            (saudi_arabia_id, 10),
+        ] {
+            let mut seed = 0x51EDu64;
+            let mut hit = false;
+            for _ in 0..300_000 {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                let s: String = (0..len)
+                    .map(|i| (b'0' + (seed.rotate_left(i as u32 * 3) % 10) as u8) as char)
+                    .collect();
+                let s = if v as usize == uae_emirates_id as usize {
+                    format!("784{}", &s[3..])
+                } else {
+                    s
+                };
+                if v(&s) {
+                    hit = true;
+                    break;
+                }
+            }
+            assert!(hit, "validator never accepted a constructed value");
+        }
+    }
 
     #[test]
     fn eu_id_vectors() {

@@ -218,6 +218,49 @@ fn shape(subtype: &str, r: &mut Rng) -> String {
         "switzerland_ahv" => format!("756{}", r.digits(10)),
         "czech_rodne_cislo" => format!("{}/{}", r.digits(6), r.digits(4)),
         "ireland_pps" => format!("{}{}", r.digits(7), r.upper()),
+        // ---- Asia / Americas / Middle East ----
+        "singapore_nric" => format!(
+            "{}{}{}",
+            b"STFG"[r.below(4) as usize] as char,
+            r.digits(7),
+            r.upper()
+        ),
+        "taiwan_id" => format!(
+            "{}{}{}",
+            r.upper(),
+            if r.below(2) == 0 { '1' } else { '2' },
+            r.digits(8)
+        ),
+        "uae_emirates_id" => format!("784{}", r.digits(12)),
+        "brazil_cnpj" => r.digits(14),
+        "hong_kong_hkid" => format!(
+            "{}{}{}",
+            r.upper(),
+            r.digits(6),
+            b"0123456789A"[r.below(11) as usize] as char
+        ),
+        "japan_my_number" => r.digits(12),
+        "thailand_national_id" => r.digits(13),
+        "new_zealand_ird" => r.digits(8),
+        "chile_rut" => format!(
+            "{}{}",
+            r.digits(8),
+            b"0123456789K"[r.below(11) as usize] as char
+        ),
+        "argentina_cuit" => r.digits(11),
+        "colombia_nit" => r.digits(10),
+        "uruguay_ci" => r.digits(8),
+        "israel_teudat_zehut" => r.digits(9),
+        "saudi_arabia_id" => format!("{}{}", if r.below(2) == 0 { '1' } else { '2' }, r.digits(9)),
+        "indonesia_nik" => r.digits(16),
+        "malaysia_mykad" => r.digits(12),
+        "philippines_philsys" => format!("{}-{}-{}", r.digits(4), r.digits(4), r.digits(4)),
+        "egypt_national_id" => format!(
+            "{}{}",
+            if r.below(2) == 0 { '2' } else { '3' },
+            r.digits(13)
+        ),
+        "nigeria_nin" => r.digits(11),
         other => panic!("no shape generator for {other}"),
     }
 }
@@ -282,6 +325,20 @@ fn validator(subtype: &str) -> Option<fn(&str) -> bool> {
         "russia_inn" => nid::russia_inn,
         "czech_rodne_cislo" => nid::czech_rodne_cislo,
         "denmark_cpr" => nid::denmark_cpr,
+        "singapore_nric" => nid::singapore_nric,
+        "hong_kong_hkid" => nid::hong_kong_hkid,
+        "taiwan_id" => nid::taiwan_id,
+        "japan_my_number" => nid::japan_my_number,
+        "thailand_national_id" => nid::thailand_national_id,
+        "new_zealand_ird" => nid::new_zealand_ird,
+        "brazil_cnpj" => nid::brazil_cnpj,
+        "chile_rut" => nid::chile_rut,
+        "argentina_cuit" => nid::argentina_cuit,
+        "colombia_nit" => nid::colombia_nit,
+        "uruguay_ci" => nid::uruguay_ci,
+        "israel_teudat_zehut" => nid::israel_teudat_zehut,
+        "uae_emirates_id" => nid::uae_emirates_id,
+        "saudi_arabia_id" => nid::saudi_arabia_id,
         // format-only (no checksum): btc treated as format here (a valid
         // base58check address can't be brute-forced), mexico_curp, us_ssn,
         // uk_nino, imsi, us_passport, icd10, ...
@@ -377,6 +434,25 @@ const CASES: &[(&str, &str)] = &[
     ("russia_inn", "INN"),
     ("czech_rodne_cislo", ""),
     ("denmark_cpr", "CPR"),
+    ("singapore_nric", ""),
+    ("taiwan_id", ""),
+    ("uae_emirates_id", ""),
+    ("brazil_cnpj", "CNPJ"),
+    ("hong_kong_hkid", "HKID"),
+    ("japan_my_number", "My Number"),
+    ("thailand_national_id", "Thai"),
+    ("new_zealand_ird", "IRD"),
+    ("chile_rut", "RUT"),
+    ("argentina_cuit", "CUIT"),
+    ("colombia_nit", "NIT"),
+    ("uruguay_ci", "cedula"),
+    ("israel_teudat_zehut", "Israel"),
+    ("saudi_arabia_id", "Iqama"),
+    ("indonesia_nik", "NIK"),
+    ("malaysia_mykad", "MyKad"),
+    ("philippines_philsys", "PhilSys"),
+    ("egypt_national_id", "national id"),
+    ("nigeria_nin", "NIN"),
 ];
 
 const TEMPLATES: &[&str] = &[
