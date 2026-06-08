@@ -853,12 +853,12 @@ function HomeContent() {
     // The first nav item doubles as "go to chat view + start a fresh
     // conversation". Each click allocates a new session id (empty
     // rows are not reused — that felt like opening an old recent).
-    { id: "home", label: "New chat", icon: <Plus className="h-3.5 w-3.5" /> },
-    { id: "pipes", label: "Pipes", icon: <Workflow className="h-3.5 w-3.5" /> },
-    { id: "timeline", label: "Timeline", icon: <Clock className="h-3.5 w-3.5" /> },
-    { id: "meetings", label: "Meeting notes", icon: <NotebookPen className="h-3.5 w-3.5" /> },
-    { id: "memories", label: "Memories", icon: <Sparkles className="h-3.5 w-3.5" /> },
-    { id: "connections", label: "Connections", icon: <Plug className="h-3.5 w-3.5" /> },
+    { id: "home", label: "New chat", icon: <Plus className="h-[18px] w-[18px]" /> },
+    { id: "pipes", label: "Pipes", icon: <Workflow className="h-[18px] w-[18px]" /> },
+    { id: "timeline", label: "Timeline", icon: <Clock className="h-[18px] w-[18px]" /> },
+    { id: "meetings", label: "Meeting notes", icon: <NotebookPen className="h-[18px] w-[18px]" /> },
+    { id: "memories", label: "Memories", icon: <Sparkles className="h-[18px] w-[18px]" /> },
+    { id: "connections", label: "Connections", icon: <Plug className="h-[18px] w-[18px]" /> },
   ]
     .filter((s) => !isSectionHidden(s.id))
     // Timeline can be turned off in Display settings — when it is, drop it from
@@ -920,7 +920,7 @@ function HomeContent() {
                       isTranslucent ? "vibrant-nav-item" : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
                     )}
                   >
-                    <PanelLeftClose className="h-3.5 w-3.5" />
+                    <PanelLeftClose className="h-[18px] w-[18px]" />
                   </button>
                 </TooltipTrigger>
                 <TooltipContent side="bottom" className="text-xs">
@@ -942,7 +942,7 @@ function HomeContent() {
                       isTranslucent ? "vibrant-nav-item" : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
                     )}
                   >
-                    <Search className="h-3.5 w-3.5" />
+                    <Search className="h-[18px] w-[18px]" />
                   </button>
                 </TooltipTrigger>
                 <TooltipContent side="bottom" className="text-xs">
@@ -971,8 +971,7 @@ function HomeContent() {
                 const monitors = recordingDevices.filter((d) => d.kind === "monitor");
                 const inputs = recordingDevices.filter((d) => d.kind === "input");
                 const outputs = recordingDevices.filter((d) => d.kind === "output");
-                const screenOpacity = overlayData.screenActive ? 0.5 + Math.min(overlayData.captureFps / 2, 0.5) : 0.2;
-                const audioOpacity = overlayData.audioActive ? 0.5 + Math.min(overlayData.speechRatio, 0.5) : 0.2;
+                const recording = overlayData.screenActive;
 
                 const groups: {
                   key: "monitor" | "mic" | "output";
@@ -980,21 +979,40 @@ function HomeContent() {
                   pausedIcon?: typeof Monitor;
                   count: number;
                   title: string;
-                  opacity: number;
                   devices: RecordingDevice[];
                 }[] = [];
-                if (monitors.length > 0) groups.push({ key: "monitor", icon: Monitor, count: monitors.length, title: monitors.map((d) => d.name).join(", "), opacity: screenOpacity, devices: monitors });
-                if (inputs.length > 0) groups.push({ key: "mic", icon: Mic, pausedIcon: MicOff, count: inputs.length, title: inputs.map((d) => d.name).join(", "), opacity: audioOpacity, devices: inputs });
-                if (outputs.length > 0) groups.push({ key: "output", icon: Volume2, pausedIcon: VolumeX, count: outputs.length, title: outputs.map((d) => d.name).join(", "), opacity: audioOpacity, devices: outputs });
+                if (monitors.length > 0) groups.push({ key: "monitor", icon: Monitor, count: monitors.length, title: monitors.map((d) => d.name).join(", "), devices: monitors });
+                if (inputs.length > 0) groups.push({ key: "mic", icon: Mic, pausedIcon: MicOff, count: inputs.length, title: inputs.map((d) => d.name).join(", "), devices: inputs });
+                if (outputs.length > 0) groups.push({ key: "output", icon: Volume2, pausedIcon: VolumeX, count: outputs.length, title: outputs.map((d) => d.name).join(", "), devices: outputs });
 
                 return (
-                  <div className="flex items-center gap-2 mt-1.5">
-                    {groups.map(({ key, icon: ActiveIcon, pausedIcon: PausedIcon, count, title, opacity, devices: groupDevices }) => {
+                  <div className="mt-2 space-y-1.5">
+                    <div className="flex items-center gap-1.5">
+                      <span
+                        aria-hidden="true"
+                        className={cn(
+                          "h-2 w-2 rounded-full shrink-0",
+                          recording ? "bg-foreground" : "border border-muted-foreground"
+                        )}
+                      />
+                      <span className={cn(
+                        "text-xs font-medium",
+                        recording
+                          ? (isTranslucent ? "vibrant-sidebar-fg" : "text-foreground")
+                          : (isTranslucent ? "vibrant-sidebar-fg-muted" : "text-muted-foreground")
+                      )}>
+                        {recording ? "recording" : "paused"}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                    {groups.map(({ key, icon: ActiveIcon, pausedIcon: PausedIcon, count, title, devices: groupDevices }) => {
                       const activeCount = groupDevices.filter((d: RecordingDevice) => d.active).length;
                       const allActive = groupDevices.every((d: RecordingDevice) => d.active);
                       const isAudioGroup = key !== "monitor";
                       const Icon = isAudioGroup && !allActive && PausedIcon ? PausedIcon : ActiveIcon;
-                      const iconOpacity = isAudioGroup && !allActive ? 0.45 : opacity;
+                      // Binary on/off contrast instead of an opacity gradient (per design.md),
+                      // so paused devices read clearly instead of fading toward invisible.
+                      const isOn = key === "monitor" ? recording : activeCount > 0;
                       const actionLabel = key === "monitor"
                         ? title
                         : allActive
@@ -1063,11 +1081,10 @@ function HomeContent() {
                               <Icon
                                 aria-hidden="true"
                                 focusable="false"
-                                className={cn("h-3 w-3 transition-colors", isTranslucent ? "vibrant-sidebar-fg" : "text-foreground")}
-                                style={{ opacity: iconOpacity }}
+                                className={cn("h-4 w-4 transition-colors", isTranslucent ? "vibrant-sidebar-fg" : isOn ? "text-foreground" : "text-muted-foreground/50")}
                               />
                               {count > 1 && (
-                                <span className={cn("text-[9px] font-medium leading-none", isTranslucent ? "vibrant-sidebar-fg-muted" : "text-foreground/50")}>{count}</span>
+                                <span className={cn("text-[11px] font-medium leading-none", isTranslucent ? "vibrant-sidebar-fg-muted" : isOn ? "text-foreground" : "text-muted-foreground/50")}>{count}</span>
                               )}
                             </button>
                           </TooltipTrigger>
@@ -1077,7 +1094,7 @@ function HomeContent() {
                         </Tooltip>
                       );
                     })}
-                    <div className="w-px h-3 bg-border mx-0.5" />
+                    <div className="w-px h-4 bg-border mx-0.5" />
                     <NotificationBell />
                     <Tooltip>
                       <TooltipTrigger asChild>
@@ -1100,6 +1117,7 @@ function HomeContent() {
                         {meetingState.active ? "stop meeting" : "start meeting"}
                       </TooltipContent>
                     </Tooltip>
+                    </div>
                   </div>
                 );
               })()}
@@ -1124,14 +1142,14 @@ function HomeContent() {
                           onClick={toggleSidebar}
                           aria-label="expand sidebar"
                           className={cn(
-                            "w-full flex items-center justify-center px-2.5 py-1.5 rounded-lg transition-all duration-150 text-left group",
+                            "w-full flex items-center justify-center px-2.5 py-2 rounded-lg transition-all duration-150 text-left group",
                             isTranslucent
                               ? "vibrant-nav-item vibrant-nav-hover"
                               : "hover:bg-card/50 text-muted-foreground hover:text-foreground",
                           )}
                         >
                           <PanelLeftOpen className={cn(
-                            "h-3.5 w-3.5 transition-colors flex-shrink-0",
+                            "h-[18px] w-[18px] transition-colors flex-shrink-0",
                             isTranslucent ? "vibrant-sidebar-fg-muted" : "text-muted-foreground group-hover:text-foreground"
                           )} />
                         </button>
@@ -1148,14 +1166,14 @@ function HomeContent() {
                           }}
                           aria-label="search"
                           className={cn(
-                            "w-full flex items-center justify-center px-2.5 py-1.5 rounded-lg transition-all duration-150 text-left group",
+                            "w-full flex items-center justify-center px-2.5 py-2 rounded-lg transition-all duration-150 text-left group",
                             isTranslucent
                               ? "vibrant-nav-item vibrant-nav-hover"
                               : "hover:bg-card/50 text-muted-foreground hover:text-foreground",
                           )}
                         >
                           <Search className={cn(
-                            "h-3.5 w-3.5 transition-colors flex-shrink-0",
+                            "h-[18px] w-[18px] transition-colors flex-shrink-0",
                             isTranslucent ? "vibrant-sidebar-fg-muted" : "text-muted-foreground group-hover:text-foreground"
                           )} />
                         </button>
@@ -1191,7 +1209,7 @@ function HomeContent() {
                         }
                       }}
                       className={cn(
-                        "relative w-full flex items-center px-2.5 py-1.5 rounded-lg transition-all duration-150 text-left group",
+                        "relative w-full flex items-center px-2.5 py-2 rounded-lg transition-all duration-150 text-left group",
                         sidebarCollapsed ? "justify-center" : "gap-2.5",
                         isActive
                           ? isTranslucent
@@ -1210,7 +1228,7 @@ function HomeContent() {
                       )}>
                         {section.icon}
                       </div>
-                      {!sidebarCollapsed && <span className={cn("text-xs truncate", section.id === "pipes" && runningPipeCount > 0 && "flex-1", isActive && isTranslucent ? "font-semibold vibrant-sidebar-fg" : "font-medium")}>{section.label}</span>}
+                      {!sidebarCollapsed && <span className={cn("text-sm truncate", section.id === "pipes" && runningPipeCount > 0 && "flex-1", isActive ? (isTranslucent ? "font-semibold vibrant-sidebar-fg" : "font-semibold") : "font-medium")}>{section.label}</span>}
                       {section.id === "pipes" && runningPipeCount > 0 && !sidebarCollapsed && (
                         <PipeActivityIndicator
                           kind="running"
@@ -1275,13 +1293,13 @@ function HomeContent() {
                     <button
                       onClick={() => openSettings("team")}
                       className={cn(
-                        "w-full flex items-center px-2.5 py-1.5 rounded-lg transition-all duration-150 text-left group",
+                        "w-full flex items-center px-2.5 py-2 rounded-lg transition-all duration-150 text-left group",
                         sidebarCollapsed ? "justify-center" : "space-x-2.5",
                         isTranslucent ? "vibrant-nav-item vibrant-nav-hover" : "hover:bg-card/50 text-muted-foreground hover:text-foreground",
                       )}
                     >
-                      <UserPlus className={cn("h-3.5 w-3.5 transition-colors flex-shrink-0", isTranslucent ? "" : "text-muted-foreground group-hover:text-foreground")} />
-                      {!sidebarCollapsed && <span className="font-medium text-xs truncate">{teamLabel}</span>}
+                      <UserPlus className={cn("h-[18px] w-[18px] transition-colors flex-shrink-0", isTranslucent ? "" : "text-muted-foreground group-hover:text-foreground")} />
+                      {!sidebarCollapsed && <span className="font-medium text-sm truncate">{teamLabel}</span>}
                     </button>
                   );
                   if (sidebarCollapsed) {
@@ -1301,13 +1319,13 @@ function HomeContent() {
                     <button
                       onClick={() => openSettings("referral")}
                       className={cn(
-                        "w-full flex items-center px-2.5 py-1.5 rounded-lg transition-all duration-150 text-left group",
+                        "w-full flex items-center px-2.5 py-2 rounded-lg transition-all duration-150 text-left group",
                         sidebarCollapsed ? "justify-center" : "space-x-2.5",
                         isTranslucent ? "vibrant-nav-item vibrant-nav-hover" : "hover:bg-card/50 text-muted-foreground hover:text-foreground",
                       )}
                     >
-                      <Gift className={cn("h-3.5 w-3.5 transition-colors flex-shrink-0", isTranslucent ? "" : "text-muted-foreground group-hover:text-foreground")} />
-                      {!sidebarCollapsed && <span className="font-medium text-xs truncate">Get free month</span>}
+                      <Gift className={cn("h-[18px] w-[18px] transition-colors flex-shrink-0", isTranslucent ? "" : "text-muted-foreground group-hover:text-foreground")} />
+                      {!sidebarCollapsed && <span className="font-medium text-sm truncate">Get free month</span>}
                     </button>
                   );
                   if (sidebarCollapsed) {
@@ -1328,7 +1346,7 @@ function HomeContent() {
                       data-testid="nav-settings"
                       onClick={() => openSettings("general")}
                       className={cn(
-                        "w-full flex items-center px-2.5 py-1.5 rounded-lg transition-all duration-150 text-left group",
+                        "w-full flex items-center px-2.5 py-2 rounded-lg transition-all duration-150 text-left group",
                         sidebarCollapsed ? "justify-center" : "space-x-2.5",
                         isTranslucent
                           ? "vibrant-nav-item vibrant-nav-hover"
@@ -1339,9 +1357,9 @@ function HomeContent() {
                         "transition-colors flex-shrink-0",
                         isTranslucent ? "" : "text-muted-foreground group-hover:text-foreground"
                       )}>
-                        <SettingsIcon className="h-3.5 w-3.5" />
+                        <SettingsIcon className="h-[18px] w-[18px]" />
                       </div>
-                      {!sidebarCollapsed && <span className="font-medium text-xs truncate">Settings</span>}
+                      {!sidebarCollapsed && <span className="font-medium text-sm truncate">Settings</span>}
                     </button>
                   );
                   if (sidebarCollapsed) {
@@ -1365,7 +1383,7 @@ function HomeContent() {
                         setActiveSection("help");
                       }}
                       className={cn(
-                        "w-full flex items-center px-2.5 py-1.5 rounded-lg transition-all duration-150 text-left group",
+                        "w-full flex items-center px-2.5 py-2 rounded-lg transition-all duration-150 text-left group",
                         sidebarCollapsed ? "justify-center" : "space-x-2.5",
                         isActive
                           ? isTranslucent
@@ -1382,9 +1400,9 @@ function HomeContent() {
                           ? isTranslucent ? "" : "text-primary"
                           : isTranslucent ? "" : "text-muted-foreground group-hover:text-foreground"
                       )}>
-                        <HelpCircle className="h-3.5 w-3.5" />
+                        <HelpCircle className="h-[18px] w-[18px]" />
                       </div>
-                      {!sidebarCollapsed && <span className="font-medium text-xs truncate">Help</span>}
+                      {!sidebarCollapsed && <span className="font-medium text-sm truncate">Help</span>}
                     </button>
                   );
                   if (sidebarCollapsed) {
