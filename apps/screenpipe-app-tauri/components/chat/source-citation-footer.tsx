@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { SourceCitation, SourceCitationKind } from "@/lib/source-citations";
-import { jumpToTimelineMoment } from "@/lib/timeline-navigation";
+import { jumpToTimelineMoment, openSearchForQuery } from "@/lib/timeline-navigation";
 
 interface SourceCitationFooterProps {
   citations: SourceCitation[];
@@ -148,10 +148,12 @@ function SourceCitationRow({ citation }: { citation: SourceCitation }) {
   const Icon = KIND_ICON[citation.kind] ?? FileText;
   const kindLabel = KIND_LABEL[citation.kind] ?? citation.kind;
   const canOpen = Boolean(citation.href);
-  // Local screen captures carry a timestamp instead of an href — clicking jumps
-  // into the timeline at that moment rather than opening an external link.
-  const canJump = !canOpen && Boolean(citation.timestamp);
-  const interactive = canOpen || canJump;
+  // A screen capture with a search term opens the search window (a thumbnail
+  // grid of every matching capture); a time-only capture jumps into the
+  // timeline at that moment; web/file sources open their external href.
+  const canSearch = !canOpen && Boolean(citation.query);
+  const canJump = !canOpen && !canSearch && Boolean(citation.timestamp);
+  const interactive = canOpen || canSearch || canJump;
 
   const inner = (
     <>
@@ -165,6 +167,7 @@ function SourceCitationRow({ citation }: { citation: SourceCitation }) {
             {kindLabel}
           </span>
           {canOpen && <ExternalLink className="h-3 w-3 shrink-0 text-muted-foreground/70" />}
+          {canSearch && <Search className="h-3 w-3 shrink-0 text-muted-foreground/70" />}
           {canJump && <History className="h-3 w-3 shrink-0 text-muted-foreground/70" />}
         </span>
         {citation.subtitle && (
@@ -185,8 +188,12 @@ function SourceCitationRow({ citation }: { citation: SourceCitation }) {
   return (
     <button
       type="button"
-      title={canJump ? "open in timeline" : undefined}
+      title={canSearch ? "open in search" : canJump ? "open in timeline" : undefined}
       onClick={() => {
+        if (canSearch && citation.query) {
+          void openSearchForQuery(citation.query);
+          return;
+        }
         if (canJump && citation.timestamp) {
           void jumpToTimelineMoment(citation.timestamp);
           return;

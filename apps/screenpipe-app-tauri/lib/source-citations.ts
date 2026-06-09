@@ -22,6 +22,10 @@ export interface SourceCitation {
   // local (screenpipe) citation, the footer makes the row jump into the
   // timeline at this moment instead of rendering as dead text.
   timestamp?: string;
+  // The search term behind this source. When set, the footer opens it in the
+  // search window (thumbnail grid of every matching capture) rather than
+  // jumping to a single timeline moment.
+  query?: string;
 }
 
 interface ToolCallLike {
@@ -249,6 +253,7 @@ function screenpipeToolCitation(args: Record<string, unknown>): SourceCitation {
     title: "Screenpipe search",
     subtitle: parts.join("; ") || undefined,
     timestamp: navTimestamp(startTime),
+    query: query || undefined,
   };
 }
 
@@ -307,6 +312,7 @@ function screenpipeApiCitation(call: string): SourceCitation {
   // connector endpoints aren't time-anchored screen data, so leave them inert.
   const params = queryParams(query);
   const timestamp = kind === "screenpipe" ? navTimestamp(params.start_time) : undefined;
+  const searchText = path === "/search" ? params.q : undefined;
 
   return {
     id: stableId(["screenpipe", path, query]),
@@ -314,6 +320,7 @@ function screenpipeApiCitation(call: string): SourceCitation {
     title,
     subtitle: screenpipeSubtitle(path, query),
     timestamp,
+    query: searchText,
   };
 }
 
@@ -432,6 +439,7 @@ function normalizeExplicitCitations(value: unknown): SourceCitation[] {
     const subtitle = typeof item.subtitle === "string" ? item.subtitle : undefined;
     const href = typeof item.href === "string" ? item.href : undefined;
     const timestamp = typeof item.timestamp === "string" ? navTimestamp(item.timestamp) : undefined;
+    const query = typeof item.query === "string" && item.query.trim() ? item.query.trim() : undefined;
     citations.push({
       id: typeof item.id === "string" && item.id ? item.id : stableId([kind, title, subtitle, href]),
       kind,
@@ -439,6 +447,7 @@ function normalizeExplicitCitations(value: unknown): SourceCitation[] {
       subtitle,
       href,
       timestamp,
+      query,
     });
   }
   return dedupeCitations(citations);

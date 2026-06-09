@@ -20,3 +20,14 @@ export async function jumpToTimelineMoment(timestamp: string): Promise<boolean> 
   await emit("navigate-to-timestamp", timestamp);
   return true;
 }
+
+// Open the standalone search window pre-filled with a query, so the user sees
+// the full thumbnail grid of matching captures. The search window reads `?q=`
+// from its URL (see search-modal standalone mode); showWindow appends the
+// query verbatim to /search, so pass the `?q=` prefix here.
+export async function openSearchForQuery(query: string): Promise<boolean> {
+  const q = query.trim();
+  if (!q) return false;
+  await commands.showWindow({ Search: { query: `?q=${encodeURIComponent(q)}` } });
+  return true;
+}
