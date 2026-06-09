@@ -18,7 +18,16 @@ use eventkit::{
 use objc2::rc::Retained;
 use objc2_event_kit::{EKCalendar, EKEventStore};
 use objc2_foundation::{NSArray, NSDate, NSURL};
-use tracing::debug;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tracing::{info, warn};
+
+/// Set once Calendar access is granted in this process (the user accepted the
+/// macOS popup). macOS's static `authorizationStatusForEntityType:` can keep
+/// returning a stale, non-`FullAccess` value for minutes after an in-process
+/// grant (observed on macOS 26), which would otherwise make every read
+/// hard-fail with `AuthorizationDenied` even though TCC has actually granted
+/// access. Once we've seen a grant, we trust it and let the query run.
+static ACCESS_GRANTED_THIS_SESSION: AtomicBool = AtomicBool::new(false);
 
 /// A calendar event with attendee information.
 /// Times are stored in both UTC (for comparison) and Local (for display).
@@ -62,6 +71,13 @@ impl ScreenpipeCalendar {
         EventsManager::authorization_status()
     }
 
+    /// True once the user granted Calendar access in this process, even if the
+    /// OS's cached authorization status hasn't caught up yet. See
+    /// [`ACCESS_GRANTED_THIS_SESSION`].
+    pub fn access_granted_this_session() -> bool {
+        ACCESS_GRANTED_THIS_SESSION.load(Ordering::Relaxed)
+    }
+
     /// Request full access (shows popup on first call, then persists).
     ///
     /// screenpipe only reads calendars/events, but EventKit does not offer a
@@ -71,6 +87,7 @@ impl ScreenpipeCalendar {
     pub fn request_access(&self) -> EKResult<bool> {
         let granted = self.manager.request_access()?;
         if granted {
+            ACCESS_GRANTED_THIS_SESSION.store(true, Ordering::Relaxed);
             self.reset();
         }
         Ok(granted)
@@ -128,10 +145,37 @@ impl ScreenpipeCalendar {
         // Ensure read authorization. EventKit's WriteOnly mode is insufficient
         // here: screenpipe reads existing calendar events, attendees, URLs, and
         // locations for meeting detection.
+        //
+        // macOS's static authorization status can lag a fresh in-process grant
+        // by minutes (observed on macOS 26): `request_access` returns granted,
+        // yet `authorization_status()` still reports a non-`FullAccess` value.
+        // That previously hard-failed every read with `AuthorizationDenied`, so
+        // a user who had just connected their calendar saw nothing. When we've
+        // seen a grant this session, trust it and re-sync the store instead of
+        // failing. Explicit Denied/Restricted always blocks.
         let status = Self::authorization_status();
-        if status != AuthorizationStatus::FullAccess {
-            return Err(EventKitError::AuthorizationDenied);
+        match status {
+            AuthorizationStatus::FullAccess => {}
+            AuthorizationStatus::Denied | AuthorizationStatus::Restricted => {
+                return Err(EventKitError::AuthorizationDenied);
+            }
+            _ => {
+                if Self::access_granted_this_session() {
+                    warn!(
+                        "calendar: os status is {} but access was granted this session — re-syncing and reading anyway",
+                        status
+                    );
+                    self.reset();
+                } else {
+                    return Err(EventKitError::AuthorizationDenied);
+                }
+            }
         }
+
+        // Refresh sources so this freshly created store reflects the latest
+        // grant + synced calendar data. The fork only refreshes on write paths,
+        // so a brand-new read store can otherwise return stale/empty results.
+        unsafe { self.store.refreshSourcesIfNecessary() };
 
         let start_date = datetime_to_nsdate(start);
         let end_date = datetime_to_nsdate(end);
@@ -198,7 +242,7 @@ impl ScreenpipeCalendar {
 
         // Sort by start date
         items.sort_by(|a, b| a.start.cmp(&b.start));
-        debug!("calendar: fetched {} events", items.len());
+        info!("calendar: fetched {} events", items.len());
 
         Ok(items)
     }
