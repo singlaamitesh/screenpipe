@@ -678,8 +678,9 @@ async function setSettingsStripped(store: Store, settings: Settings) {
 	if (token) {
 		try {
 			const res = await commands.setCloudToken(token);
-			persisted = res.status === "ok";
-			if (!persisted) {
+			if (res.status === "ok") {
+				persisted = true;
+			} else {
 				console.warn("cloud token not persisted to secret store:", res.error);
 			}
 		} catch (e) {
