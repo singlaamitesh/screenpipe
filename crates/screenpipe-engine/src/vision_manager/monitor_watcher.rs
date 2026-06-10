@@ -325,7 +325,9 @@ pub async fn start_monitor_watcher(
                         warn!("wedge watchdog: vision stop failed: {:?}", e);
                     }
                     match vision_manager.start().await {
-                        Ok(()) => info!("wedge watchdog: VisionManager restarted after silent wedge"),
+                        Ok(()) => {
+                            info!("wedge watchdog: VisionManager restarted after silent wedge")
+                        }
                         Err(e) => warn!("wedge watchdog: vision restart failed: {:?}", e),
                     }
                     last_vision_restart = Some(Instant::now());
