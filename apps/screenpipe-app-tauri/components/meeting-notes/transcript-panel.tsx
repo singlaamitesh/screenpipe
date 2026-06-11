@@ -16,6 +16,7 @@ import {
   Check,
   Copy,
   Loader2,
+  Play,
   Search,
   User,
   X,
@@ -23,6 +24,7 @@ import {
 import { listen } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { MediaComponent } from "@/components/rewind/media";
 import { SpeakerAssignPopover } from "@/components/speaker-assign-popover";
 import { useHealthCheck } from "@/lib/hooks/use-health-check";
 import type { LiveCaptureState } from "@/lib/utils/live-capture-state";
@@ -847,9 +849,10 @@ function SpeakerParagraph({
   query: string;
   onSpeakerAssigned: () => void;
 }) {
+  const [showPlayer, setShowPlayer] = useState(false);
   return (
     <li
-      className="px-4 py-2.5 hover:bg-muted/30 transition-colors"
+      className="group px-4 py-2.5 hover:bg-muted/30 transition-colors"
       style={{ contain: "layout paint" }}
     >
       <div className="flex items-baseline gap-2 mb-1">
@@ -885,10 +888,37 @@ function SpeakerParagraph({
         >
           {formatClock(block.startMs)}
         </span>
+        {block.firstAudioFilePath && (
+          <button
+            type="button"
+            onClick={() => setShowPlayer((value) => !value)}
+            className={cn(
+              "ml-auto inline-flex h-5 w-5 shrink-0 items-center justify-center self-center transition-opacity",
+              "text-muted-foreground hover:text-foreground",
+              showPlayer
+                ? "opacity-100"
+                : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
+            )}
+            title={showPlayer ? "hide audio" : "play this segment's audio"}
+            aria-label={showPlayer ? "hide audio" : "play this segment's audio"}
+            aria-expanded={showPlayer}
+          >
+            {showPlayer ? (
+              <X className="h-3 w-3" />
+            ) : (
+              <Play className="h-3 w-3" />
+            )}
+          </button>
+        )}
       </div>
       <p className="text-xs leading-relaxed text-foreground/90 whitespace-pre-wrap break-words">
         <HighlightedText text={block.text} query={query} />
       </p>
+      {showPlayer && block.firstAudioFilePath && (
+        <div className="mt-2">
+          <MediaComponent filePath={block.firstAudioFilePath} />
+        </div>
+      )}
     </li>
   );
 }

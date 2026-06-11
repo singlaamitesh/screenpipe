@@ -70,6 +70,33 @@ function useEditorFocused(editor: Editor | null): boolean {
 }
 
 /**
+ * Track whether the primary mouse button is held down inside the editor —
+ * used to keep the format toolbar out of the way while a selection is being
+ * dragged (it would otherwise chase the cursor mid-drag).
+ */
+function useEditorMouseDown(editor: Editor | null): boolean {
+  const [down, setDown] = useState(false);
+  useEffect(() => {
+    if (!editor || editor.isDestroyed) return;
+    const dom = editor.view.dom;
+    const onDown = (event: PointerEvent) => {
+      if (event.button === 0) setDown(true);
+    };
+    // The drag can end anywhere, so listen for release on the window.
+    const onUp = () => setDown(false);
+    dom.addEventListener("pointerdown", onDown);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      dom.removeEventListener("pointerdown", onDown);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, [editor]);
+  return down;
+}
+
+/**
  * Position a floating element near an editor anchor. `compute` runs after
  * render (so the element is measurable) and again on any scroll/resize —
  * scroll uses capture so nested scroll containers reposition the menu too.
@@ -231,6 +258,9 @@ export function SlashCommandMenu({ editor }: { editor: Editor | null }) {
         left: pos?.left ?? 0,
         visibility: pos ? "visible" : "hidden",
       }}
+      // Portaled, but React still bubbles events through the tree — without
+      // this, a menu click reaches the editor shell's focus("end") handler.
+      onClick={(event) => event.stopPropagation()}
     >
       <div className="select-none border-b border-border px-2.5 py-1.5 text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
         blocks
@@ -242,8 +272,10 @@ export function SlashCommandMenu({ editor }: { editor: Editor | null }) {
             type="button"
             className={cn(
               "flex w-full items-center gap-2 px-2 py-1.5 text-left text-xs transition-colors",
+              // Full inversion for the active row — hover/selection is color
+              // inversion in this design system, not a tint.
               index === selectedIndex
-                ? "bg-accent text-accent-foreground"
+                ? "bg-foreground text-background"
                 : "text-foreground",
             )}
             // Keep the caret in the editor — a focus swap would close the menu.
@@ -251,9 +283,23 @@ export function SlashCommandMenu({ editor }: { editor: Editor | null }) {
             onMouseEnter={() => setSelectedIndex(index)}
             onClick={() => execute(item)}
           >
-            <item.icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            <item.icon
+              className={cn(
+                "h-3.5 w-3.5 shrink-0",
+                index === selectedIndex
+                  ? "text-background/80"
+                  : "text-muted-foreground",
+              )}
+            />
             <span className="flex-1 truncate">{item.label}</span>
-            <span className="shrink-0 text-[10px] text-muted-foreground/70">
+            <span
+              className={cn(
+                "shrink-0 text-[10px]",
+                index === selectedIndex
+                  ? "text-background/70"
+                  : "text-muted-foreground/70",
+              )}
+            >
               {item.hint}
             </span>
           </button>
@@ -350,6 +396,7 @@ const TOOLBAR_ACTIONS: ToolbarAction[] = [
 
 export function FormatToolbar({ editor }: { editor: Editor | null }) {
   const focused = useEditorFocused(editor);
+  const mouseDown = useEditorMouseDown(editor);
 
   const snapshot = useEditorState({
     editor,
@@ -394,7 +441,9 @@ export function FormatToolbar({ editor }: { editor: Editor | null }) {
         a.quote === b.quote),
   });
 
-  const open = !!editor && !!snapshot && focused;
+  // Wait for the mouse to settle: showing the toolbar mid-drag makes it
+  // chase the cursor and sit under the pointer.
+  const open = !!editor && !!snapshot && focused && !mouseDown;
 
   const { ref, pos } = useAnchoredPosition(
     open,
@@ -434,6 +483,10 @@ export function FormatToolbar({ editor }: { editor: Editor | null }) {
       }}
       // Keep the text selection alive while clicking buttons.
       onMouseDown={(event) => event.preventDefault()}
+      // Portaled, but React still bubbles events through the tree — without
+      // this, a toolbar click reaches the editor shell's focus("end") handler
+      // and collapses the selection to the end of the note.
+      onClick={(event) => event.stopPropagation()}
     >
       {TOOLBAR_ACTIONS.map((action, index) => {
         const isActive = snapshot[action.id];
