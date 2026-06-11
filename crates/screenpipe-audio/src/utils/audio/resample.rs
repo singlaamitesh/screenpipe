@@ -97,13 +97,67 @@ impl StreamResampler {
 
     /// Drain any buffered partial chunk (end of stream).
     pub fn flush(&mut self) -> Result<Vec<f32>> {
+        // Defensive: drain full chunks first so process_partial never sees
+        // more than one chunk (its input must fit input_frames_next).
+        let mut output = self.process(&[])?;
         if self.pending.is_empty() {
-            return Ok(Vec::new());
+            return Ok(output);
         }
         let pending = std::mem::take(&mut self.pending);
         let waves = self.resampler.process_partial(Some(&[&pending]), None)?;
-        Ok(waves.into_iter().next().unwrap_or_default())
+        output.extend(waves.into_iter().next().unwrap_or_default());
+        Ok(output)
     }
+}
+
+/// Resample one frame of a continuous stream, reusing the resampler in `slot`.
+///
+/// Builds the resampler on first use, rebuilds it if the device sample rate
+/// changes mid-stream, and passes audio through untouched when rates already
+/// match. On any transition the outgoing resampler's buffered tail (already in
+/// the output domain) is drained ahead of the new audio so nothing is dropped
+/// or reordered.
+pub fn resample_stream_frame(
+    slot: &mut Option<StreamResampler>,
+    mono: Vec<f32>,
+    from_sample_rate: u32,
+    to_sample_rate: u32,
+) -> Result<Vec<f32>> {
+    let needs_resampler = from_sample_rate != to_sample_rate;
+    let reusable = needs_resampler
+        && matches!(slot, Some(rs) if rs.from_sample_rate() == from_sample_rate
+            && rs.to_sample_rate() == to_sample_rate);
+
+    let mut head = Vec::new();
+    if !reusable {
+        if let Some(mut stale) = slot.take() {
+            // A flush failure here only costs the <10ms stale tail; never kill
+            // a live stream over it.
+            match stale.flush() {
+                Ok(tail) => head = tail,
+                Err(err) => debug!("dropping stale resampler tail on rate change: {err}"),
+            }
+        }
+    }
+
+    if !needs_resampler {
+        if head.is_empty() {
+            return Ok(mono);
+        }
+        head.extend(mono);
+        return Ok(head);
+    }
+
+    let resampler = match slot {
+        Some(resampler) => resampler,
+        None => slot.insert(StreamResampler::new(from_sample_rate, to_sample_rate)?),
+    };
+    let output = resampler.process(&mono)?;
+    if head.is_empty() {
+        return Ok(output);
+    }
+    head.extend(output);
+    Ok(head)
 }
 
 #[cfg(test)]
@@ -142,6 +196,62 @@ mod tests {
         // Remainder (20 samples) drains on flush.
         assert!(!rs.flush().expect("flush").is_empty());
         assert!(rs.flush().expect("flush").is_empty());
+    }
+
+    #[test]
+    fn stream_resampler_upsamples() {
+        // Telephony-grade devices (Bluetooth HFP mics) run at 8kHz.
+        let mut rs = StreamResampler::new(8_000, 16_000).expect("resampler");
+        let input = vec![0.2f32; 8_000];
+        let mut produced = rs.process(&input).expect("process").len();
+        produced += rs.flush().expect("flush").len();
+        assert!((produced as i64 - 16_000).abs() <= 320, "got {produced}");
+    }
+
+    #[test]
+    fn stream_resampler_handles_non_integer_ratio() {
+        // 44.1kHz is the most common mac mic rate; 44100/16000 never divides
+        // evenly so chunk boundaries land mid-sample.
+        let mut rs = StreamResampler::new(44_100, 16_000).expect("resampler");
+        let frame = vec![0.2f32; 441];
+        let mut produced = 0usize;
+        for _ in 0..100 {
+            produced += rs.process(&frame).expect("process").len();
+        }
+        produced += rs.flush().expect("flush").len();
+        // 1s of input should give ~16k samples out.
+        assert!((produced as i64 - 16_000).abs() <= 480, "got {produced}");
+    }
+
+    #[test]
+    fn stream_frame_transition_flushes_stale_tail_in_order() {
+        let mut slot = None;
+        // 48k frames build a resampler and leave a partial chunk pending.
+        let out =
+            resample_stream_frame(&mut slot, vec![0.3f32; 1_000], 48_000, 16_000).expect("48k");
+        assert!(slot.is_some());
+        assert!(!out.is_empty());
+
+        // Device switches to native 16k: the stale tail must drain ahead of the
+        // passthrough samples, and the resampler must be dropped.
+        let out =
+            resample_stream_frame(&mut slot, vec![0.4f32; 160], 16_000, 16_000).expect("16k");
+        assert!(slot.is_none());
+        assert!(out.len() > 160, "tail + passthrough, got {}", out.len());
+        assert_eq!(out[out.len() - 160..], [0.4f32; 160]);
+
+        // A different input rate after that rebuilds for the new rate.
+        let _ = resample_stream_frame(&mut slot, vec![0.1f32; 441], 44_100, 16_000).expect("44k");
+        assert!(slot.as_ref().is_some_and(|rs| rs.from_sample_rate() == 44_100));
+    }
+
+    #[test]
+    fn stream_frame_passthrough_without_resampler_is_untouched() {
+        let mut slot = None;
+        let out =
+            resample_stream_frame(&mut slot, vec![0.7f32; 320], 16_000, 16_000).expect("16k");
+        assert_eq!(out, vec![0.7f32; 320]);
+        assert!(slot.is_none());
     }
 
     #[test]

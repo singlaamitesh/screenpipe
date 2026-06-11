@@ -34,7 +34,7 @@ use crate::{
         net::connect_websocket_with_ipv4_fallback,
         MeetingAudioFrame, MeetingStreamingConfig, MeetingStreamingProvider,
     },
-    utils::audio::StreamResampler,
+    utils::audio::{resample_stream_frame, StreamResampler},
 };
 
 const DEEPGRAM_PCM_SAMPLE_RATE: u32 = 16_000;
@@ -256,23 +256,12 @@ fn encode_frame(
     }
 
     let mono = downmix_to_mono(&frame.samples, frame.channels);
-    let samples = if frame.sample_rate == DEEPGRAM_PCM_SAMPLE_RATE {
-        mono
-    } else {
-        // One resampler per stream, rebuilt only if the device's sample rate
-        // changes mid-meeting; constructing one per frame recomputes a 65k-tap
-        // sinc bank each call and burned more than a core during meetings.
-        let stream = match resampler {
-            Some(stream) if stream.from_sample_rate() == frame.sample_rate => stream,
-            _ => resampler.insert(
-                StreamResampler::new(frame.sample_rate, DEEPGRAM_PCM_SAMPLE_RATE)
-                    .context("failed to build resampler for Deepgram live transcription")?,
-            ),
-        };
-        stream
-            .process(&mono)
-            .context("failed to resample meeting audio for Deepgram live transcription")?
-    };
+    // One resampler per stream, rebuilt only on a mid-meeting device rate
+    // change; constructing one per frame recomputes a 65k-tap sinc bank each
+    // call and burned more than a core during meetings.
+    let samples =
+        resample_stream_frame(resampler, mono, frame.sample_rate, DEEPGRAM_PCM_SAMPLE_RATE)
+            .context("failed to resample meeting audio for Deepgram live transcription")?;
 
     Ok(pcm_bytes(&samples))
 }
