@@ -812,7 +812,9 @@ pub async fn set_cloud_token(
     // Unblock cloud calls for THIS session first — the ArcSwap + cache are the
     // runtime source of truth, so a failed durable write below never breaks an
     // active sign-in.
-    state.cloud_token.store(std::sync::Arc::new(normalized.clone()));
+    state
+        .cloud_token
+        .store(std::sync::Arc::new(normalized.clone()));
     // #3943: persist to the encrypted secret store (authoritative at-rest copy)
     // and refresh the in-process cache. We surface a persistence failure as an
     // Err so the frontend won't strip the last plaintext copy of a token it
@@ -1725,7 +1727,8 @@ pub async fn set_window_always_on_top_native(
                 if let raw_window_handle::RawWindowHandle::AppKit(appkit_handle) = handle.as_raw() {
                     use objc::{msg_send, sel, sel_impl};
                     let ns_view = appkit_handle.ns_view.as_ptr() as *mut objc::runtime::Object;
-                    let ns_window: *mut objc::runtime::Object = unsafe { msg_send![ns_view, window] };
+                    let ns_window: *mut objc::runtime::Object =
+                        unsafe { msg_send![ns_view, window] };
                     if !ns_window.is_null() {
                         // NSNormalWindowLevel = 0. NSFloatingWindowLevel = 3.
                         // Floating keeps recovery/onboarding above normal app
@@ -2212,7 +2215,10 @@ fn shortcut_reminder_label(
     setting_key: &str,
     disabled_shortcuts: &[String],
 ) -> String {
-    if disabled_shortcuts.iter().any(|disabled| disabled == setting_key) {
+    if disabled_shortcuts
+        .iter()
+        .any(|disabled| disabled == setting_key)
+    {
         String::new()
     } else if value.trim().is_empty() {
         String::new()

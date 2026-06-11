@@ -429,7 +429,10 @@ mod tests {
     #[test]
     fn missing_or_empty_token_yields_none() {
         assert_eq!(token_from_store_bytes(br#"{"settings":{"user":{}}}"#), None);
-        assert_eq!(token_from_store_bytes(br#"{"settings":{"user":{"token":""}}}"#), None);
+        assert_eq!(
+            token_from_store_bytes(br#"{"settings":{"user":{"token":""}}}"#),
+            None
+        );
         assert_eq!(token_from_store_bytes(br#"{"settings":{}}"#), None);
         assert_eq!(token_from_auth_json(br#"{}"#), None);
         assert_eq!(token_from_auth_json(br#"{"token":""}"#), None);
@@ -447,13 +450,18 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&out).unwrap();
         assert!(json.pointer("/settings/user/token").unwrap().is_null());
         assert!(json.pointer("/settings/user/apiKey").unwrap().is_null());
-        assert_eq!(json.pointer("/settings/user/email").unwrap().as_str(), Some("a@b.c"));
+        assert_eq!(
+            json.pointer("/settings/user/email").unwrap().as_str(),
+            Some("a@b.c")
+        );
         assert!(json.pointer("/settings/aiPresets").unwrap().is_array());
     }
 
     #[test]
     fn redact_is_noop_when_already_clean() {
-        assert!(redact_token_in_store_json(br#"{"settings":{"user":{"email":"a@b.c"}}}"#).is_none());
+        assert!(
+            redact_token_in_store_json(br#"{"settings":{"user":{"email":"a@b.c"}}}"#).is_none()
+        );
         assert!(redact_token_in_store_json(br#"{"settings":{"user":{"token":null}}}"#).is_none());
         assert!(redact_token_in_store_json(br#"{"other":1}"#).is_none());
         assert!(redact_token_in_store_json(b"not json").is_none());
@@ -494,13 +502,20 @@ mod tests {
     fn scrub_rewrites_file_without_token() {
         let dir = unique_dir("scrub_basic");
         let p = dir.join("store.bin");
-        std::fs::write(&p, br#"{"settings":{"user":{"token":"jwt","email":"a@b.c"},"aiPresets":[{"id":"x"}]}}"#).unwrap();
+        std::fs::write(
+            &p,
+            br#"{"settings":{"user":{"token":"jwt","email":"a@b.c"},"aiPresets":[{"id":"x"}]}}"#,
+        )
+        .unwrap();
         scrub_store_bin_token(&p);
         let after = std::fs::read(&p).unwrap();
         assert_eq!(token_from_store_bytes(&after), None);
         let json: serde_json::Value = serde_json::from_slice(&after).unwrap();
         assert!(json.pointer("/settings/aiPresets").unwrap().is_array());
-        assert_eq!(json.pointer("/settings/user/email").unwrap().as_str(), Some("a@b.c"));
+        assert_eq!(
+            json.pointer("/settings/user/email").unwrap().as_str(),
+            Some("a@b.c")
+        );
         // No stray tmp file left behind.
         assert!(!dir.join("store.bin.scrub.tmp").exists());
     }
@@ -513,7 +528,11 @@ mod tests {
         let original = b"SPSTORE1\x00\x01\x02encryptedblob";
         std::fs::write(&enc, original).unwrap();
         scrub_store_bin_token(&enc);
-        assert_eq!(std::fs::read(&enc).unwrap(), original, "encrypted file untouched");
+        assert_eq!(
+            std::fs::read(&enc).unwrap(),
+            original,
+            "encrypted file untouched"
+        );
     }
 
     #[test]
@@ -535,7 +554,11 @@ mod tests {
         let p = dir.join("auth.json");
         std::fs::write(&p, b"not json").unwrap();
         scrub_pi_auth_json(&p);
-        assert_eq!(std::fs::read(&p).unwrap(), b"not json", "malformed left as-is");
+        assert_eq!(
+            std::fs::read(&p).unwrap(),
+            b"not json",
+            "malformed left as-is"
+        );
         let clean: &[u8] = br#"{"anthropic":"sk-other"}"#;
         std::fs::write(&p, clean).unwrap();
         scrub_pi_auth_json(&p);
@@ -554,11 +577,15 @@ mod tests {
         scrub_pi_models_json(&p);
         let json: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
         assert_eq!(
-            json.pointer("/providers/screenpipe/apiKey").unwrap().as_str(),
+            json.pointer("/providers/screenpipe/apiKey")
+                .unwrap()
+                .as_str(),
             Some("SCREENPIPE_API_KEY")
         );
         assert_eq!(
-            json.pointer("/providers/screenpipe/baseUrl").unwrap().as_str(),
+            json.pointer("/providers/screenpipe/baseUrl")
+                .unwrap()
+                .as_str(),
             Some("u"),
             "rest of the provider config preserved"
         );
@@ -606,8 +633,13 @@ mod tests {
     async fn store_load_roundtrip_encrypted() {
         let dir = unique_dir("rt_enc");
         let key = [7u8; 32];
-        store_token_at(&dir, Some(key), Some("jwt-enc")).await.unwrap();
-        assert_eq!(read_back(&dir, Some(key)).await, Some("jwt-enc".to_string()));
+        store_token_at(&dir, Some(key), Some("jwt-enc"))
+            .await
+            .unwrap();
+        assert_eq!(
+            read_back(&dir, Some(key)).await,
+            Some("jwt-enc".to_string())
+        );
         // Raw db bytes must not contain the plaintext token.
         let raw = std::fs::read(dir.join("db.sqlite")).unwrap();
         assert!(
@@ -670,7 +702,9 @@ mod tests {
     async fn migrate_already_in_secret_store_still_scrubs_plaintext() {
         let dir = unique_dir("mig_already");
         // Pre-seed the SecretStore with the canonical token...
-        store_token_at(&dir, None, Some("jwt-canonical")).await.unwrap();
+        store_token_at(&dir, None, Some("jwt-canonical"))
+            .await
+            .unwrap();
         // ...while a STALE plaintext copy lingers in store.bin.
         std::fs::write(
             dir.join("store.bin"),
@@ -681,7 +715,10 @@ mod tests {
         let got = migrate_at(&dir, None).await;
         // SecretStore wins — the stale plaintext does NOT overwrite it.
         assert_eq!(got, Some("jwt-canonical".to_string()));
-        assert_eq!(read_back(&dir, None).await, Some("jwt-canonical".to_string()));
+        assert_eq!(
+            read_back(&dir, None).await,
+            Some("jwt-canonical".to_string())
+        );
         // But the stale plaintext is scrubbed regardless.
         assert_eq!(
             token_from_store_bytes(&std::fs::read(dir.join("store.bin")).unwrap()),

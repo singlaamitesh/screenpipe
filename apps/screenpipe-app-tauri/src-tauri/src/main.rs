@@ -35,9 +35,9 @@ mod icons;
 use crate::analytics::start_analytics;
 mod agent_event_emitter;
 mod audio_exclusions;
+mod auth_token;
 mod calendar;
 mod capture_session;
-mod auth_token;
 mod chatgpt_oauth;
 #[allow(deprecated)]
 mod commands;
