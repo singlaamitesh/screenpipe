@@ -753,6 +753,19 @@ async fn main() {
         }
     }
 
+    // #3943: migrate the cloud auth token out of the plaintext store.bin /
+    // auth.json (and the .last-good snapshot) into the encrypted secret store,
+    // seed the in-process cache, and scrub the plaintext copies. Runs here in
+    // `async main` — BEFORE the store plugin loads store.bin and before the
+    // engine spawn / `to_recording_settings` read the token. Must NOT run
+    // inside `.setup()`: a `block_on` there nests runtimes under
+    // #[tokio::main] and panics ("Cannot start a runtime from within a
+    // runtime"), killing the app at launch.
+    let _ = crate::auth_token::migrate_plaintext_token(
+        &screenpipe_core::paths::default_screenpipe_data_dir(),
+    )
+    .await;
+
     let recording_state = RecordingState {
         server: Arc::new(tokio::sync::Mutex::new(None)),
         capture: Arc::new(tokio::sync::Mutex::new(None)),
@@ -927,19 +940,6 @@ async fn main() {
                 app.deep_link().register_all()?;
             }
             let app_handle = app.handle();
-
-            // #3943: migrate the cloud auth token out of the plaintext
-            // store.bin / auth.json (and the .last-good snapshot) into the
-            // encrypted secret store, seed the in-process cache, and scrub the
-            // plaintext copies. Runs synchronously here — BEFORE init_store and
-            // the engine spawn read the token — so the cache is ready for the
-            // sync hot path (`to_recording_settings`).
-            {
-                let data_dir = screenpipe_core::paths::default_screenpipe_data_dir();
-                let _ = tauri::async_runtime::block_on(
-                    crate::auth_token::migrate_plaintext_token(&data_dir),
-                );
-            }
 
             // Create macOS app menu with Settings
             #[cfg(target_os = "macos")]
@@ -1766,7 +1766,15 @@ async fn main() {
             {
                 if let Ok(Some(store)) = crate::store::SettingsStore::get(&app_handle) {
                     if store.enhanced_ai {
-                        let token = store.user.token.clone().unwrap_or_default();
+                        // #3943: the token no longer persists in store.bin —
+                        // fall back to the secret-store-backed cache.
+                        let token = store
+                            .user
+                            .token
+                            .clone()
+                            .filter(|t| !t.is_empty())
+                            .or_else(crate::auth_token::cached_cloud_token)
+                            .unwrap_or_default();
                         if !token.is_empty() {
                             // Use try_lock — blocking_lock panics inside a tokio runtime context
                             if let Ok(mut guard) = suggestions_state.enhanced_ai.try_lock() {
