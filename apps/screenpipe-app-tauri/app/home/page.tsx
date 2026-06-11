@@ -40,10 +40,7 @@ import { BrainSection } from "@/components/settings/brain-section";
 import { ConnectionsSection } from "@/components/settings/connections-section";
 import { MeetingNotesSection } from "@/components/meeting-notes";
 import { StandaloneChat } from "@/components/standalone-chat";
-import {
-  ChatSidebar,
-  CollapsedChatSidebarButton,
-} from "@/components/chat-sidebar";
+import { ChatSidebar } from "@/components/chat-sidebar";
 import { ChatHistoryView } from "@/components/chat/chat-history-view";
 import { mountPiEventRouter } from "@/lib/stores/pi-event-router";
 import { mountPipeRunRecorder } from "@/lib/events/pipe-run-recorder";
@@ -906,42 +903,45 @@ function HomeContent() {
       <div className="h-screen flex min-h-0">
           {/* Sidebar */}
           <TooltipProvider delayDuration={0}>
-          {/* Top-left chrome row — pinned next to the macOS traffic lights
-              when the sidebar is EXPANDED: collapse, search, then the
-              recording-status dot and notification bell. No wordmark, no
-              header row — the whole corner is this one strip (Claude /
-              Codex style). When collapsed, collapse + search live as the
-              first two rows of the icon column instead (see below). Fixed
-              positioning anchors the strip to the viewport so it isn't
-              clipped by AppSidebar's overflow. */}
-          {!sidebarCollapsed && (
-            <div
-              className={cn(
-                // top-0.5 + items-center puts each icon's center at y≈15px,
-                // matching the vertical center of the macOS traffic lights
-                // (which sit at y≈14).
-                "fixed top-0.5 z-20 flex items-center gap-1.5",
-                reserveTrafficLights ? "left-[78px]" : "left-2"
-              )}
-            >
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    onClick={toggleSidebar}
-                    aria-label="collapse sidebar"
-                    className={cn(
-                      "p-1 rounded-md transition-colors",
-                      isTranslucent ? "vibrant-nav-item" : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
-                    )}
-                  >
-                    <PanelLeftClose className="h-3.5 w-3.5" />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom" className="text-xs">
-                  collapse sidebar <kbd className="ml-1 px-1 py-0.5 bg-muted rounded text-[10px]">⌘B</kbd>
-                </TooltipContent>
-              </Tooltip>
+          {/* Top-left chrome strip — pinned next to the macOS traffic
+              lights: sidebar toggle, search, recording-status dot and
+              notification bell. No wordmark, no header row (Claude /
+              Codex style). When the sidebar is collapsed it is hidden
+              entirely and the strip floats over the content, reduced to
+              toggle + status dot. The h-8 drag region already keeps the
+              top band free of interactive content, so nothing collides.
+              Fixed positioning anchors the strip to the viewport so it
+              isn't clipped by AppSidebar's overflow. */}
+          <div
+            className={cn(
+              // top-0.5 + items-center puts each icon's center at y≈15px,
+              // matching the vertical center of the macOS traffic lights
+              // (which sit at y≈14).
+              "fixed top-0.5 z-20 flex items-center gap-1.5",
+              reserveTrafficLights ? "left-[78px]" : "left-2"
+            )}
+          >
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={toggleSidebar}
+                  aria-label={sidebarCollapsed ? "expand sidebar" : "collapse sidebar"}
+                  className={cn(
+                    "p-1 rounded-md transition-colors",
+                    isTranslucent ? "vibrant-nav-item" : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                  )}
+                >
+                  {sidebarCollapsed
+                    ? <PanelLeftOpen className="h-3.5 w-3.5" />
+                    : <PanelLeftClose className="h-3.5 w-3.5" />}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="text-xs">
+                {sidebarCollapsed ? "expand sidebar" : "collapse sidebar"} <kbd className="ml-1 px-1 py-0.5 bg-muted rounded text-[10px]">⌘B</kbd>
+              </TooltipContent>
+            </Tooltip>
 
+            {!sidebarCollapsed && (
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button
@@ -967,90 +967,33 @@ function HomeContent() {
                   ) : null}
                 </TooltipContent>
               </Tooltip>
+            )}
 
-              <RecordingStatus
-                devices={recordingDevices}
-                onDevicesChange={setRecordingDevices}
-                meetingActive={meetingState.active ?? false}
-                meetingApp={meetingState.meetingApp}
-                meetingLoading={meetingLoading}
-                onToggleMeeting={() => void toggleMeeting()}
-                isTranslucent={isTranslucent}
-              />
-              <NotificationBell />
-            </div>
-          )}
+            <RecordingStatus
+              devices={recordingDevices}
+              onDevicesChange={setRecordingDevices}
+              meetingActive={meetingState.active ?? false}
+              meetingApp={meetingState.meetingApp}
+              meetingLoading={meetingLoading}
+              onToggleMeeting={() => void toggleMeeting()}
+              isTranslucent={isTranslucent}
+            />
+            {!sidebarCollapsed && <NotificationBell />}
+          </div>
 
-          <AppSidebar collapsed={sidebarCollapsed} className="pl-4">
+          {/* Collapsed = hidden. No icon-rail fallback — the floating
+              strip above (toggle + status dot) is the entire collapsed
+              chrome, Claude-style. */}
+          {!sidebarCollapsed && (
+          <AppSidebar className="pl-4">
             {/* Navigation.
                 Outer flex column has no overflow — the chat-list section
                 inside owns its own scroll, otherwise the team promo +
                 bottom items would be pushed below the fold by long
                 conversation lists. */}
             <div className="p-2 flex-1 flex flex-col min-h-0">
-              {/* Main sections — when collapsed, the column is prefixed
-                  with the collapse + search icons (one-per-line, with a
-                  divider) so they sit just below the traffic lights. */}
+              {/* Main sections */}
               <div className="space-y-0.5 shrink-0">
-                {sidebarCollapsed && (
-                  <>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <button
-                          onClick={toggleSidebar}
-                          aria-label="expand sidebar"
-                          className={cn(
-                            "w-full flex items-center justify-center px-2.5 py-1.5 rounded-lg transition-all duration-150 text-left group",
-                            isTranslucent
-                              ? "vibrant-nav-item vibrant-nav-hover"
-                              : "hover:bg-card/50 text-muted-foreground hover:text-foreground",
-                          )}
-                        >
-                          <PanelLeftOpen className={cn(
-                            "h-3.5 w-3.5 transition-colors flex-shrink-0",
-                            isTranslucent ? "vibrant-sidebar-fg-muted" : "text-muted-foreground group-hover:text-foreground"
-                          )} />
-                        </button>
-                      </TooltipTrigger>
-                      <TooltipContent side="right" className="text-xs">
-                        expand sidebar <kbd className="ml-1 px-1 py-0.5 bg-muted rounded text-[10px]">⌘B</kbd>
-                      </TooltipContent>
-                    </Tooltip>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <button
-                          onClick={() => {
-                            void commands.showWindow({ Search: { query: null } });
-                          }}
-                          aria-label="search"
-                          className={cn(
-                            "w-full flex items-center justify-center px-2.5 py-1.5 rounded-lg transition-all duration-150 text-left group",
-                            isTranslucent
-                              ? "vibrant-nav-item vibrant-nav-hover"
-                              : "hover:bg-card/50 text-muted-foreground hover:text-foreground",
-                          )}
-                        >
-                          <Search className={cn(
-                            "h-3.5 w-3.5 transition-colors flex-shrink-0",
-                            isTranslucent ? "vibrant-sidebar-fg-muted" : "text-muted-foreground group-hover:text-foreground"
-                          )} />
-                        </button>
-                      </TooltipTrigger>
-                      <TooltipContent side="right" className="text-xs">
-                        search
-                        {!settings.disabledShortcuts.includes("searchShortcut") &&
-                        settings.searchShortcut ? (
-                          <kbd className="ml-1 px-1 py-0.5 bg-muted rounded text-[10px]">
-                            {formatShortcutDisplay(settings.searchShortcut, isMac)}
-                          </kbd>
-                        ) : null}
-                      </TooltipContent>
-                    </Tooltip>
-                    {/* Divider between the search affordance and the
-                        primary nav (+ pipes / timeline / memories). */}
-                    <div className={cn("my-1 border-t", isTranslucent ? "vibrant-sidebar-border" : "border-border/50")} />
-                  </>
-                )}
                 {mainSections.map((section) => {
                   const isActive = activeSection === section.id;
                   const btn = (
@@ -1067,8 +1010,7 @@ function HomeContent() {
                         }
                       }}
                       className={cn(
-                        "relative w-full flex items-center px-2.5 py-1.5 rounded-lg transition-all duration-150 text-left group",
-                        sidebarCollapsed ? "justify-center" : "gap-2.5",
+                        "relative w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg transition-all duration-150 text-left group",
                         isActive
                           ? isTranslucent
                             ? "vibrant-nav-active"
@@ -1086,8 +1028,8 @@ function HomeContent() {
                       )}>
                         {section.icon}
                       </div>
-                      {!sidebarCollapsed && <span className={cn("text-xs truncate", section.id === "pipes" && runningPipeCount > 0 && "flex-1", isActive && isTranslucent ? "font-semibold vibrant-sidebar-fg" : "font-medium")}>{section.label}</span>}
-                      {section.id === "pipes" && runningPipeCount > 0 && !sidebarCollapsed && (
+                      <span className={cn("text-xs truncate", section.id === "pipes" && runningPipeCount > 0 && "flex-1", isActive && isTranslucent ? "font-semibold vibrant-sidebar-fg" : "font-medium")}>{section.label}</span>
+                      {section.id === "pipes" && runningPipeCount > 0 && (
                         <PipeActivityIndicator
                           kind="running"
                           label={runningPipeCount}
@@ -1098,47 +1040,28 @@ function HomeContent() {
                       )}
                     </button>
                   );
-                  if (sidebarCollapsed) {
-                    return (
-                      <Tooltip key={section.id}>
-                        <TooltipTrigger asChild>{btn}</TooltipTrigger>
-                        <TooltipContent side="right" className="text-xs">{section.label}</TooltipContent>
-                      </Tooltip>
-                    );
-                  }
                   return btn;
                 })}
-                {sidebarCollapsed && (
-                  <CollapsedChatSidebarButton
-                    onSelect={selectChatConversation}
-                    isTranslucent={isTranslucent}
-                  />
-                )}
               </div>
 
 
               {/* Embedded chat list — sits below the nav, scrolls within
                   its own viewport so the team promo + bottom items stay
-                  pinned. Hidden when the sidebar is collapsed (no room for
-                  the conversation titles). */}
-              {!sidebarCollapsed ? (
-                <div
-                  className={cn(
-                    // pb-6 keeps a clear gap between the recents list
-                    // and the team / settings / help row — pb-3 was
-                    // too tight; the list ran almost flush against the
-                    // bottom nav.
-                    "flex-1 min-h-0 flex flex-col mt-2 -mx-2 border-t pt-2 pb-6",
-                    isTranslucent ? "vibrant-sidebar-border" : "border-border/50"
-                  )}
-                >
-                  <ChatSidebar onViewAll={() => setActiveSection("history")} />
-                </div>
-              ) : (
-                <div className="flex-1" />
-              )}
+                  pinned. */}
+              <div
+                className={cn(
+                  // pb-6 keeps a clear gap between the recents list
+                  // and the team / settings / help row — pb-3 was
+                  // too tight; the list ran almost flush against the
+                  // bottom nav.
+                  "flex-1 min-h-0 flex flex-col mt-2 -mx-2 border-t pt-2 pb-6",
+                  isTranslucent ? "vibrant-sidebar-border" : "border-border/50"
+                )}
+              >
+                <ChatSidebar onViewAll={() => setActiveSection("history")} />
+              </div>
 
-              {!sidebarCollapsed && <UpdateBanner variant="sidebar" className="mb-2" />}
+              <UpdateBanner variant="sidebar" className="mb-2" />
 
               {/* Bottom items */}
               <div className={cn("space-y-0.5 border-t pt-2", isTranslucent ? "vibrant-sidebar-border" : "border-border")}>
@@ -1151,23 +1074,14 @@ function HomeContent() {
                     <button
                       onClick={() => openSettings("team")}
                       className={cn(
-                        "w-full flex items-center px-2.5 py-1.5 rounded-lg transition-all duration-150 text-left group",
-                        sidebarCollapsed ? "justify-center" : "space-x-2.5",
+                        "w-full flex items-center space-x-2.5 px-2.5 py-1.5 rounded-lg transition-all duration-150 text-left group",
                         isTranslucent ? "vibrant-nav-item vibrant-nav-hover" : "hover:bg-card/50 text-muted-foreground hover:text-foreground",
                       )}
                     >
                       <UserPlus className={cn("h-3.5 w-3.5 transition-colors flex-shrink-0", isTranslucent ? "" : "text-muted-foreground group-hover:text-foreground")} />
-                      {!sidebarCollapsed && <span className="font-medium text-xs truncate">{teamLabel}</span>}
+                      <span className="font-medium text-xs truncate">{teamLabel}</span>
                     </button>
                   );
-                  if (sidebarCollapsed) {
-                    return (
-                      <Tooltip>
-                        <TooltipTrigger asChild>{btn}</TooltipTrigger>
-                        <TooltipContent side="right" className="text-xs">{teamLabel}</TooltipContent>
-                      </Tooltip>
-                    );
-                  }
                   return btn;
                 })()}
 
@@ -1177,23 +1091,14 @@ function HomeContent() {
                     <button
                       onClick={() => openSettings("referral")}
                       className={cn(
-                        "w-full flex items-center px-2.5 py-1.5 rounded-lg transition-all duration-150 text-left group",
-                        sidebarCollapsed ? "justify-center" : "space-x-2.5",
+                        "w-full flex items-center space-x-2.5 px-2.5 py-1.5 rounded-lg transition-all duration-150 text-left group",
                         isTranslucent ? "vibrant-nav-item vibrant-nav-hover" : "hover:bg-card/50 text-muted-foreground hover:text-foreground",
                       )}
                     >
                       <Gift className={cn("h-3.5 w-3.5 transition-colors flex-shrink-0", isTranslucent ? "" : "text-muted-foreground group-hover:text-foreground")} />
-                      {!sidebarCollapsed && <span className="font-medium text-xs truncate">Get free month</span>}
+                      <span className="font-medium text-xs truncate">Get free month</span>
                     </button>
                   );
-                  if (sidebarCollapsed) {
-                    return (
-                      <Tooltip>
-                        <TooltipTrigger asChild>{btn}</TooltipTrigger>
-                        <TooltipContent side="right" className="text-xs">Get free month</TooltipContent>
-                      </Tooltip>
-                    );
-                  }
                   return btn;
                 })()}
 
@@ -1204,8 +1109,7 @@ function HomeContent() {
                       data-testid="nav-settings"
                       onClick={() => openSettings("general")}
                       className={cn(
-                        "w-full flex items-center px-2.5 py-1.5 rounded-lg transition-all duration-150 text-left group",
-                        sidebarCollapsed ? "justify-center" : "space-x-2.5",
+                        "w-full flex items-center space-x-2.5 px-2.5 py-1.5 rounded-lg transition-all duration-150 text-left group",
                         isTranslucent
                           ? "vibrant-nav-item vibrant-nav-hover"
                           : "hover:bg-card/50 text-muted-foreground hover:text-foreground",
@@ -1217,17 +1121,9 @@ function HomeContent() {
                       )}>
                         <SettingsIcon className="h-3.5 w-3.5" />
                       </div>
-                      {!sidebarCollapsed && <span className="font-medium text-xs truncate">Settings</span>}
+                      <span className="font-medium text-xs truncate">Settings</span>
                     </button>
                   );
-                  if (sidebarCollapsed) {
-                    return (
-                      <Tooltip>
-                        <TooltipTrigger asChild>{btn}</TooltipTrigger>
-                        <TooltipContent side="right" className="text-xs">Settings</TooltipContent>
-                      </Tooltip>
-                    );
-                  }
                   return btn;
                 })()}
 
@@ -1241,8 +1137,7 @@ function HomeContent() {
                         setActiveSection("help");
                       }}
                       className={cn(
-                        "w-full flex items-center px-2.5 py-1.5 rounded-lg transition-all duration-150 text-left group",
-                        sidebarCollapsed ? "justify-center" : "space-x-2.5",
+                        "w-full flex items-center space-x-2.5 px-2.5 py-1.5 rounded-lg transition-all duration-150 text-left group",
                         isActive
                           ? isTranslucent
                             ? "vibrant-nav-active"
@@ -1260,22 +1155,15 @@ function HomeContent() {
                       )}>
                         <HelpCircle className="h-3.5 w-3.5" />
                       </div>
-                      {!sidebarCollapsed && <span className="font-medium text-xs truncate">Help</span>}
+                      <span className="font-medium text-xs truncate">Help</span>
                     </button>
                   );
-                  if (sidebarCollapsed) {
-                    return (
-                      <Tooltip>
-                        <TooltipTrigger asChild>{btn}</TooltipTrigger>
-                        <TooltipContent side="right" className="text-xs">Help</TooltipContent>
-                      </Tooltip>
-                    );
-                  }
                   return btn;
                 })()}
               </div>
             </div>
           </AppSidebar>
+          )}
           </TooltipProvider>
 
           {/* Content */}
