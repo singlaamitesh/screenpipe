@@ -234,22 +234,22 @@ mod tests {
 
         // Device switches to native 16k: the stale tail must drain ahead of the
         // passthrough samples, and the resampler must be dropped.
-        let out =
-            resample_stream_frame(&mut slot, vec![0.4f32; 160], 16_000, 16_000).expect("16k");
+        let out = resample_stream_frame(&mut slot, vec![0.4f32; 160], 16_000, 16_000).expect("16k");
         assert!(slot.is_none());
         assert!(out.len() > 160, "tail + passthrough, got {}", out.len());
         assert_eq!(out[out.len() - 160..], [0.4f32; 160]);
 
         // A different input rate after that rebuilds for the new rate.
         let _ = resample_stream_frame(&mut slot, vec![0.1f32; 441], 44_100, 16_000).expect("44k");
-        assert!(slot.as_ref().is_some_and(|rs| rs.from_sample_rate() == 44_100));
+        assert!(slot
+            .as_ref()
+            .is_some_and(|rs| rs.from_sample_rate() == 44_100));
     }
 
     #[test]
     fn stream_frame_passthrough_without_resampler_is_untouched() {
         let mut slot = None;
-        let out =
-            resample_stream_frame(&mut slot, vec![0.7f32; 320], 16_000, 16_000).expect("16k");
+        let out = resample_stream_frame(&mut slot, vec![0.7f32; 320], 16_000, 16_000).expect("16k");
         assert_eq!(out, vec![0.7f32; 320]);
         assert!(slot.is_none());
     }
