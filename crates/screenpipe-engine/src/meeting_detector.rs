@@ -1991,31 +1991,61 @@ pub fn meeting_app_is_ignored(
     profile: &MeetingDetectionProfile,
     ignored: &[String],
 ) -> bool {
-    if ignored.is_empty() {
+    let ignored_terms = normalize_ignored_meeting_apps(ignored);
+    meeting_app_is_ignored_with_terms(app_name, profile, &ignored_terms)
+}
+
+fn normalize_ignored_meeting_apps(ignored: &[String]) -> Vec<String> {
+    ignored
+        .iter()
+        .map(|raw| raw.trim().to_lowercase())
+        .filter(|term| !term.is_empty())
+        .collect()
+}
+
+fn contains_normalized_term(haystack: &str, term_lower: &str) -> bool {
+    if term_lower.is_empty() {
         return false;
     }
-    let app_name_lc = app_name.to_lowercase();
+
+    if haystack.is_ascii() && term_lower.is_ascii() {
+        let needle = term_lower.as_bytes();
+        return haystack
+            .as_bytes()
+            .windows(needle.len())
+            .any(|window| window.eq_ignore_ascii_case(needle));
+    }
+
+    haystack.to_lowercase().contains(term_lower)
+}
+
+fn meeting_app_is_ignored_with_terms(
+    app_name: &str,
+    profile: &MeetingDetectionProfile,
+    ignored_terms: &[String],
+) -> bool {
+    if ignored_terms.is_empty() {
+        return false;
+    }
     let ids = &profile.app_identifiers;
-    ignored.iter().any(|raw| {
-        let term = raw.trim().to_lowercase();
-        if term.is_empty() {
-            return false;
-        }
-        app_name_lc.contains(&term)
-            // macos_app_names are stored lowercase already.
-            || ids.macos_app_names.iter().any(|n| n.contains(&term))
+    ignored_terms.iter().any(|term| {
+        contains_normalized_term(app_name, term)
+            || ids
+                .macos_app_names
+                .iter()
+                .any(|n| contains_normalized_term(n, term))
             || ids
                 .windows_process_names
                 .iter()
-                .any(|n| n.to_lowercase().contains(&term))
+                .any(|n| contains_normalized_term(n, term))
             || ids
                 .browser_url_patterns
                 .iter()
-                .any(|n| n.to_lowercase().contains(&term))
+                .any(|n| contains_normalized_term(n, term))
             || ids
                 .browser_title_patterns
                 .iter()
-                .any(|n| n.to_lowercase().contains(&term))
+                .any(|n| contains_normalized_term(n, term))
     })
 }
 
@@ -2590,6 +2620,7 @@ pub async fn run_meeting_detection_loop(
     let base_interval = scan_interval.unwrap_or(ACTIVE_SCAN_INTERVAL);
     let mut current_interval = base_interval;
     let mut idle_scan_count: u64 = 0;
+    let ignored_meeting_app_terms = normalize_ignored_meeting_apps(&ignored_meeting_apps);
 
     // Check if any profile uses browser URL or title patterns (to gate DB query)
     let has_browser_profiles = profiles.iter().any(|p| {
@@ -2842,12 +2873,14 @@ pub async fn run_meeting_detection_loop(
         // Drop apps the user excluded from detection (settings: ignoredMeetingApps).
         // Done before the AX scan so an ignored app costs nothing past enumeration,
         // and applied uniformly to native, browser, and DB-hint matches.
-        if !ignored_meeting_apps.is_empty() {
+        if !ignored_meeting_app_terms.is_empty() {
             let before = running_apps.len();
             running_apps.retain(|app| match profiles.get(app.profile_index) {
-                Some(profile) => {
-                    !meeting_app_is_ignored(&app.app_name, profile, &ignored_meeting_apps)
-                }
+                Some(profile) => !meeting_app_is_ignored_with_terms(
+                    &app.app_name,
+                    profile,
+                    &ignored_meeting_app_terms,
+                ),
                 None => true,
             });
             let removed = before - running_apps.len();
@@ -3556,6 +3589,20 @@ mod tests {
             "zoom.us",
             &p,
             &["teams".to_string()]
+        ));
+    }
+
+    #[test]
+    fn ignored_meeting_apps_reuses_normalized_terms() {
+        let p = zoom_test_profile();
+        let terms =
+            normalize_ignored_meeting_apps(&["  ZOOM.US/J  ".to_string(), "   ".to_string()]);
+
+        assert_eq!(terms, vec!["zoom.us/j"]);
+        assert!(meeting_app_is_ignored_with_terms(
+            "Google Chrome",
+            &p,
+            &terms
         ));
     }
 
