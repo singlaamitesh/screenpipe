@@ -1714,9 +1714,10 @@ fn browser_title_matches_pattern(title_lower: &str, pattern: &str) -> bool {
 
 /// Check if an app name is a known browser.
 fn is_browser_app(app_name: &str) -> bool {
-    let lower = app_name.to_lowercase();
-    BROWSER_NAMES.iter().any(|b| lower.contains(b))
-        || lower.ends_with(".exe")
+    BROWSER_NAMES
+        .iter()
+        .any(|b| contains_case_insensitive(app_name, b))
+        || ends_with_ascii_case_insensitive(app_name, ".exe")
             && [
                 "chrome.exe",
                 "firefox.exe",
@@ -1725,7 +1726,7 @@ fn is_browser_app(app_name: &str) -> bool {
                 "opera.exe",
             ]
             .iter()
-            .any(|b| lower.contains(b))
+            .any(|b| contains_case_insensitive(app_name, b))
 }
 
 /// Advance the state machine based on scan results.
@@ -2047,6 +2048,13 @@ fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
     }
 
     haystack.to_lowercase().contains(&needle.to_lowercase())
+}
+
+fn ends_with_ascii_case_insensitive(haystack: &str, suffix: &str) -> bool {
+    let haystack = haystack.as_bytes();
+    let suffix = suffix.as_bytes();
+    haystack.len() >= suffix.len()
+        && haystack[haystack.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
 }
 
 fn meeting_app_is_ignored_with_terms(
@@ -3642,6 +3650,15 @@ mod tests {
     }
 
     // ── AttrNeeds tests ────────────────────────────────────────────────
+
+    #[test]
+    fn browser_app_detection_is_case_insensitive() {
+        assert!(is_browser_app("Google Chrome"));
+        assert!(is_browser_app("CHROME.EXE"));
+        assert!(is_browser_app("Microsoft Edge Helper"));
+        assert!(is_browser_app("brave.exe"));
+        assert!(!is_browser_app("Zoom.exe"));
+    }
 
     #[test]
     fn attr_needs_empty_signal_set_needs_nothing() {
