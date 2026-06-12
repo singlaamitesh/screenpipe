@@ -16,6 +16,24 @@ use tracing::{info, warn};
 
 use crate::video_cache::{AudioEntry, DeviceFrame, FrameMetadata, TimeSeriesFrame};
 
+fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+
+    let needle = needle.as_bytes();
+    haystack.as_bytes().windows(needle.len()).any(|window| {
+        window
+            .iter()
+            .zip(needle)
+            .all(|(left, right)| left.eq_ignore_ascii_case(right))
+    })
+}
+
+fn is_screenpipe_app_name(app_name: &str) -> bool {
+    contains_ascii_case_insensitive(app_name, "screenpipe")
+}
+
 /// Cached frame from the capture pipeline.
 ///
 /// All string fields are `Arc<str>` so that `.clone()` is O(1) — one atomic
@@ -226,7 +244,7 @@ impl HotFrameCache {
                     // Convert FrameData to HotFrames
                     for ocr_entry in &frame_data.ocr_entries {
                         // Skip screenpipe's own frames
-                        if ocr_entry.app_name.to_lowercase().contains("screenpipe") {
+                        if is_screenpipe_app_name(&ocr_entry.app_name) {
                             continue;
                         }
                         let hot = HotFrame {
@@ -418,6 +436,14 @@ fn hot_frame_to_timeseries(hot: &HotFrame, audio_entries: Vec<AudioEntry>) -> Ti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_screenpipe_app_name_match_is_ascii_case_insensitive() {
+        assert!(is_screenpipe_app_name("screenpipe"));
+        assert!(is_screenpipe_app_name("SCREENPIPE Desktop"));
+        assert!(is_screenpipe_app_name("my ScreenPipe helper"));
+        assert!(!is_screenpipe_app_name("browser"));
+    }
 
     #[tokio::test]
     async fn test_push_and_get_frames() {
