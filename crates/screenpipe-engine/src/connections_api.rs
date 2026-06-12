@@ -3008,8 +3008,7 @@ mod calendar_error_response_tests {
 
     #[test]
     fn native_unsupported_platform_is_200_not_connected() {
-        let (status, Json(body)) =
-            native_calendar_error_response(NativeCalendarError::Unsupported);
+        let (status, Json(body)) = native_calendar_error_response(NativeCalendarError::Unsupported);
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["connected"], false);
         assert_eq!(body["reason"], "unsupported_platform");
