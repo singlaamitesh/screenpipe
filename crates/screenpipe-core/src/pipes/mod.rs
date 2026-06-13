@@ -16,7 +16,7 @@ pub mod preset_fallback;
 pub mod sync;
 
 use crate::agents::{
-    pi::{PiExecutor, SCREENPIPE_API_URL_BG},
+    pi::{PiExecutor, SCREENPIPE_API_URL},
     AgentExecutor, ExecutionHandle,
 };
 use anyhow::{anyhow, Result};
@@ -2156,7 +2156,7 @@ impl PipeManager {
             let cloud_token = executor.user_token();
             if let Err(e) = PiExecutor::ensure_pi_config(
                 cloud_token.as_deref(),
-                SCREENPIPE_API_URL_BG,
+                SCREENPIPE_API_URL,
                 run_provider.as_deref(),
                 Some(&run_model),
                 run_provider_url.as_deref(),
@@ -2658,7 +2658,7 @@ impl PipeManager {
             if config.agent == "pi" {
                 if let Err(e) = PiExecutor::ensure_pi_config(
                     None,
-                    SCREENPIPE_API_URL_BG,
+                    SCREENPIPE_API_URL,
                     run_provider.as_deref(),
                     Some(&run_model),
                     run_provider_url.as_deref(),
@@ -3712,7 +3712,7 @@ impl PipeManager {
                         let cloud_token = executor.user_token();
                         if let Err(e) = PiExecutor::ensure_pi_config(
                             cloud_token.as_deref(),
-                            SCREENPIPE_API_URL_BG,
+                            SCREENPIPE_API_URL,
                             provider.as_deref(),
                             Some(&model),
                             provider_url.as_deref(),
