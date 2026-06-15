@@ -49,6 +49,10 @@ const DEDUP_TIME_WINDOW_SECS: i64 = 45;
 /// Higher = stricter matching, lower = more aggressive deduplication.
 const DEDUP_SIMILARITY_THRESHOLD: f64 = 0.85;
 const FRAMES_FTS_EXTERNAL_CONTENT_MIGRATION_VERSION: i64 = 20260415000000;
+/// Migration that retires the ocr_text table: backfills its data onto frames
+/// (app/window/focused + per-word text_json) then drops it. Scans the whole
+/// frames table, so it can take minutes on very large (10M+ frame) databases.
+const OCR_TEXT_RETIREMENT_MIGRATION_VERSION: i64 = 20260613130000;
 
 /// User explicitly stopped a meeting (stop button in UI / stop API).
 /// Auto-merge MUST NOT reopen these — a new detected meeting in the same
@@ -68,7 +72,6 @@ fn normalize_timestamp_for_range_query(timestamp: &str) -> String {
 
 pub struct DeleteTimeRangeResult {
     pub frames_deleted: u64,
-    pub ocr_deleted: u64,
     pub audio_transcriptions_deleted: u64,
     pub audio_chunks_deleted: u64,
     pub video_chunks_deleted: u64,
@@ -423,7 +426,7 @@ impl DatabaseManager {
     async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         let mut migrator = sqlx::migrate!("./src/migrations");
         migrator.set_ignore_missing(true);
-        Self::log_pending_search_index_migration(pool, &migrator).await;
+        Self::log_pending_heavy_migrations(pool, &migrator).await;
         match migrator.run(pool).await {
             Ok(_) => {}
             Err(e) => {
@@ -460,16 +463,21 @@ impl DatabaseManager {
         Ok(())
     }
 
-    async fn log_pending_search_index_migration(
-        pool: &SqlitePool,
-        migrator: &sqlx::migrate::Migrator,
-    ) {
-        if !migrator
-            .iter()
-            .any(|migration| migration.version == FRAMES_FTS_EXTERNAL_CONTENT_MIGRATION_VERSION)
-        {
-            return;
-        }
+    /// Log a heads-up before running migrations that scan or rewrite the whole
+    /// frames table, so a large-DB user understands why startup pauses (it can
+    /// be minutes on 10M+ frame DBs) instead of seeing a silent hang.
+    async fn log_pending_heavy_migrations(pool: &SqlitePool, migrator: &sqlx::migrate::Migrator) {
+        // (version, message) for each heavy, frames-scanning migration.
+        const HEAVY: &[(i64, &str)] = &[
+            (
+                FRAMES_FTS_EXTERNAL_CONTENT_MIGRATION_VERSION,
+                "migrating frames_fts search index, this may take a few minutes on large databases...",
+            ),
+            (
+                OCR_TEXT_RETIREMENT_MIGRATION_VERSION,
+                "retiring the ocr_text table (moving OCR text and boxes onto frames), this may take a few minutes on very large databases...",
+            ),
+        ];
 
         let migration_table_exists = match sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations'",
@@ -484,36 +492,48 @@ impl DatabaseManager {
             }
         };
 
-        let migration_pending = if migration_table_exists {
-            match sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM _sqlx_migrations WHERE version = ?",
-            )
-            .bind(FRAMES_FTS_EXTERNAL_CONTENT_MIGRATION_VERSION)
-            .fetch_one(pool)
-            .await
-            {
-                Ok(count) => count == 0,
-                Err(e) => {
-                    debug!("could not inspect applied migrations before migrate: {}", e);
-                    return;
-                }
-            }
-        } else {
+        // On a brand-new DB (no _sqlx_migrations and no frames yet) these
+        // migrations have nothing to chew on, so skip the logging entirely.
+        if !migration_table_exists {
             match sqlx::query_scalar::<_, i64>("SELECT 1 FROM frames LIMIT 1")
                 .fetch_optional(pool)
                 .await
             {
-                Ok(Some(_)) => true,
-                Ok(None) => false,
+                Ok(Some(_)) => {} // pre-_sqlx_migrations DB that already has data
+                Ok(None) => return,
                 Err(e) => {
                     debug!("could not inspect existing frames before migrate: {}", e);
                     return;
                 }
             }
-        };
+        }
 
-        if migration_pending {
-            info!("migrating frames_fts search index, this may take a few minutes on large databases...");
+        for (version, message) in HEAVY {
+            // Skip if this build doesn't even include the migration.
+            if !migrator.iter().any(|m| m.version == *version) {
+                continue;
+            }
+            let pending = if migration_table_exists {
+                match sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM _sqlx_migrations WHERE version = ?",
+                )
+                .bind(version)
+                .fetch_one(pool)
+                .await
+                {
+                    Ok(count) => count == 0,
+                    Err(e) => {
+                        debug!("could not inspect applied migrations before migrate: {}", e);
+                        continue;
+                    }
+                }
+            } else {
+                // No _sqlx_migrations table but frames has rows: all pending.
+                true
+            };
+            if pending {
+                info!("{}", message);
+            }
         }
     }
 
@@ -6274,10 +6294,6 @@ impl DatabaseManager {
         .fetch_all(&mut **tx.conn())
         .await?;
 
-        // 3. ocr_text was retired (2026-06); its rows are gone with the table.
-        //    Frame text lives on the frame and is removed by the frames delete.
-        let ocr_deleted = 0u64;
-
         // 4b. Migrate elements from anchor frames being deleted that are referenced
         // by frames outside the delete range. For each such anchor, move its elements
         // to the first referencing frame and update all references.
@@ -6393,13 +6409,12 @@ impl DatabaseManager {
         })?;
 
         debug!(
-            "delete_time_range committed: frames={}, ocr={}, audio_transcriptions={}, audio_chunks={}, video_chunks={}, accessibility={}, ui_events={}",
-            frames_deleted, ocr_deleted, audio_transcriptions_deleted, audio_chunks_deleted, video_chunks_deleted, accessibility_deleted, ui_events_deleted
+            "delete_time_range committed: frames={}, audio_transcriptions={}, audio_chunks={}, video_chunks={}, accessibility={}, ui_events={}",
+            frames_deleted, audio_transcriptions_deleted, audio_chunks_deleted, video_chunks_deleted, accessibility_deleted, ui_events_deleted
         );
 
         Ok(DeleteTimeRangeResult {
             frames_deleted,
-            ocr_deleted,
             audio_transcriptions_deleted,
             audio_chunks_deleted,
             video_chunks_deleted,
@@ -6472,9 +6487,6 @@ impl DatabaseManager {
         .bind(&end_str)
         .fetch_all(&mut **tx.conn())
         .await?;
-
-        // 4. ocr_text was retired (2026-06); its rows are gone with the table.
-        let ocr_deleted = 0u64;
 
         // 5. Migrate elements from anchor frames being deleted
         let anchor_ids: Vec<i64> = sqlx::query_scalar(
@@ -6588,13 +6600,12 @@ impl DatabaseManager {
         })?;
 
         debug!(
-            "delete_time_range_local committed: frames={}, ocr={}, audio_transcriptions={}, audio_chunks={}, video_chunks={}, ui_events={}",
-            frames_deleted, ocr_deleted, audio_transcriptions_deleted, audio_chunks_deleted, video_chunks_deleted, ui_events_deleted
+            "delete_time_range_local committed: frames={}, audio_transcriptions={}, audio_chunks={}, video_chunks={}, ui_events={}",
+            frames_deleted, audio_transcriptions_deleted, audio_chunks_deleted, video_chunks_deleted, ui_events_deleted
         );
 
         Ok(DeleteTimeRangeResult {
             frames_deleted,
-            ocr_deleted,
             audio_transcriptions_deleted,
             audio_chunks_deleted,
             video_chunks_deleted,
@@ -6858,9 +6869,6 @@ impl DatabaseManager {
         .fetch_all(&mut **tx.conn())
         .await?;
 
-        // ocr_text was retired (2026-06); its rows are gone with the table.
-        let ocr_deleted = 0u64;
-
         // Migrate elements from anchor frames
         let anchor_ids: Vec<i64> = sqlx::query_scalar(
             r#"SELECT DISTINCT f.id FROM frames f
@@ -6960,13 +6968,12 @@ impl DatabaseManager {
         })?;
 
         debug!(
-            "delete_time_range_batch committed: frames={}, ocr={}, audio_transcriptions={}, accessibility={}, ui_events={}",
-            frames_deleted, ocr_deleted, audio_transcriptions_deleted, accessibility_deleted, ui_events_deleted
+            "delete_time_range_batch committed: frames={}, audio_transcriptions={}, accessibility={}, ui_events={}",
+            frames_deleted, audio_transcriptions_deleted, accessibility_deleted, ui_events_deleted
         );
 
         Ok(DeleteTimeRangeResult {
             frames_deleted,
-            ocr_deleted,
             audio_transcriptions_deleted,
             audio_chunks_deleted: 0,
             video_chunks_deleted: 0,
@@ -7044,9 +7051,6 @@ impl DatabaseManager {
     ) -> Result<DeleteTimeRangeResult, sqlx::Error> {
         let mut tx = self.begin_immediate_with_retry().await?;
 
-        // 1. ocr_text was retired (2026-06); its rows are gone with the table.
-        let ocr_deleted = 0u64;
-
         // 2. Delete elements for frames from this machine (no CASCADE on FK)
         sqlx::query(
             "DELETE FROM elements WHERE frame_id IN (SELECT id FROM frames WHERE machine_id = ?1)",
@@ -7102,13 +7106,12 @@ impl DatabaseManager {
         })?;
 
         debug!(
-            "delete_by_machine_id({}) committed: frames={}, ocr={}, audio_transcriptions={}, audio_chunks={}, video_chunks={}, ui_events={}",
-            machine_id, frames_deleted, ocr_deleted, audio_transcriptions_deleted, audio_chunks_deleted, video_chunks_deleted, ui_events_deleted
+            "delete_by_machine_id({}) committed: frames={}, audio_transcriptions={}, audio_chunks={}, video_chunks={}, ui_events={}",
+            machine_id, frames_deleted, audio_transcriptions_deleted, audio_chunks_deleted, video_chunks_deleted, ui_events_deleted
         );
 
         Ok(DeleteTimeRangeResult {
             frames_deleted,
-            ocr_deleted,
             audio_transcriptions_deleted,
             audio_chunks_deleted,
             video_chunks_deleted,
