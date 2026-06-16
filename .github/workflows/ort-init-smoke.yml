@@ -64,7 +64,7 @@ jobs:
         if: matrix.label == 'windows-arm64'
         shell: pwsh
         run: |
-          $version = '1.22.0'
+          $version = '1.24.2'  # ort rc.12 needs ONNX Runtime API 24 (>= 1.24); 1.22 panics at init
           $url = "https://github.com/microsoft/onnxruntime/releases/download/v$version/onnxruntime-win-arm64-$version.zip"
           Invoke-WebRequest -Uri $url -OutFile ort.zip
           Expand-Archive -Path ort.zip -DestinationPath ort-dl -Force
