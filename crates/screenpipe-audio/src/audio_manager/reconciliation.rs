@@ -776,11 +776,22 @@ pub(crate) async fn persist_orphaned_chunk(
     }
 }
 
+/// Stop a recovery pass after this many consecutive DB errors. The markers
+/// that caused the failures (and everything after) are left on disk for the
+/// next sweep. This bounds amplification: the write outage that created these
+/// markers is exactly when re-inserts fail, and without a cutoff a backlog of
+/// thousands of markers would fire thousands of (slow, timing-out) writes into
+/// the already-saturated pool in a single sweep, starving live capture writes.
+/// Mirrors `MAX_CONSECUTIVE_DB_ERRORS` in `reconcile_untranscribed`.
+const MAX_CONSECUTIVE_RECOVERY_DB_ERRORS: u32 = 3;
+
 /// Re-insert audio chunks whose initial row insert was dropped under write-pool
 /// saturation. Idempotent: a path that already has a row (inserted by the
 /// normal path on a later attempt, or recovered on a previous sweep) just has
 /// its marker cleared. A marker whose audio file no longer exists on disk
 /// (evicted by media retention) is dropped without resurrecting anything.
+/// Bails out after `MAX_CONSECUTIVE_RECOVERY_DB_ERRORS` consecutive DB failures
+/// so it never amplifies an ongoing write outage.
 /// Returns the number of chunks recovered (newly inserted this sweep).
 async fn retry_pending_chunks(db: &DatabaseManager, data_dir: &Path) -> usize {
     let dir = pending_chunks_dir(data_dir);
@@ -790,7 +801,18 @@ async fn retry_pending_chunks(db: &DatabaseManager, data_dir: &Path) -> usize {
     };
 
     let mut recovered = 0usize;
+    let mut consecutive_errors = 0u32;
     for entry in entries.flatten() {
+        // Pool likely still saturated — stop hammering it and leave the
+        // remaining markers for the next sweep.
+        if consecutive_errors >= MAX_CONSECUTIVE_RECOVERY_DB_ERRORS {
+            warn!(
+                "reconciliation: pausing pending-chunk recovery after {} consecutive DB errors (pool likely saturated); remaining markers left for the next sweep",
+                consecutive_errors
+            );
+            break;
+        }
+
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue; // skip stray .tmp files from an interrupted write
@@ -823,12 +845,14 @@ async fn retry_pending_chunks(db: &DatabaseManager, data_dir: &Path) -> usize {
         match db.find_audio_chunk_id(&pending.file_path).await {
             Ok(Some(_)) => {
                 let _ = std::fs::remove_file(&path);
+                consecutive_errors = 0; // DB responsive
                 continue;
             }
-            Ok(None) => {}
+            Ok(None) => {} // proceed to insert; not a success yet, don't reset
             Err(e) => {
                 // DB still unhappy (likely the same saturation) — leave the
                 // marker so the next sweep retries.
+                consecutive_errors += 1;
                 warn!(
                     "reconciliation: pending-chunk existence check failed for {}: {}",
                     pending.file_path, e
@@ -839,7 +863,7 @@ async fn retry_pending_chunks(db: &DatabaseManager, data_dir: &Path) -> usize {
 
         // The audio file is gone (media eviction) — there is nothing left to
         // re-insert, so drop the marker instead of recreating a row that points
-        // at a missing file.
+        // at a missing file. No DB op, so it doesn't touch the error counter.
         if !Path::new(&pending.file_path).exists() {
             debug!(
                 "reconciliation: pending-chunk audio file gone, dropping marker: {}",
@@ -856,6 +880,7 @@ async fn retry_pending_chunks(db: &DatabaseManager, data_dir: &Path) -> usize {
             Ok(_) => {
                 let _ = std::fs::remove_file(&path);
                 recovered += 1;
+                consecutive_errors = 0;
                 debug!(
                     "reconciliation: recovered orphaned audio chunk {}",
                     pending.file_path
@@ -863,6 +888,7 @@ async fn retry_pending_chunks(db: &DatabaseManager, data_dir: &Path) -> usize {
             }
             Err(e) => {
                 // Still failing — keep the marker for the next sweep.
+                consecutive_errors += 1;
                 warn!(
                     "reconciliation: pending-chunk re-insert still failing for {}: {}",
                     pending.file_path, e
@@ -1874,11 +1900,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn recovery_is_graceful_when_db_is_unavailable() {
+        // The exact failure mode this code lives in: the DB is unhappy. Recovery
+        // must not panic, must recover nothing, and must PRESERVE the markers for
+        // a later sweep (never drop them on a transient DB error). Closing the
+        // read pool makes every existence check fail; the circuit breaker also
+        // bounds how many we attempt.
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path();
+        let db = temp_db(data_dir).await;
+
+        for i in 0..6 {
+            let a = make_audio_file(
+                data_dir,
+                &format!("Mic (input)_2026-01-01_00-00-{i:02}.mp4"),
+            );
+            write_pending_chunk(
+                data_dir,
+                &PendingChunk {
+                    file_path: a,
+                    timestamp: Some(Utc::now()),
+                },
+            )
+            .unwrap();
+        }
+
+        db.pool.close().await; // every find_audio_chunk_id now errors
+
+        let recovered = retry_pending_chunks(&db, data_dir).await;
+
+        assert_eq!(recovered, 0, "nothing recovered while the DB is down");
+        assert_eq!(
+            std::fs::read_dir(pending_chunks_dir(data_dir))
+                .unwrap()
+                .count(),
+            6,
+            "markers preserved for the next sweep, not dropped on a DB error"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn recovery_is_consistent_when_markers_are_written_during_a_sweep() {
         // Production concurrency: the capture loop keeps writing markers (atomic
         // tmp+rename) while a reconciliation sweep reads the dir. Neither should
         // corrupt the other, and every real file ends up with a row after the
-        // dust settles.
+        // dust settles. Runs on a real multi-thread runtime so the writer and
+        // reader genuinely race.
         use std::sync::Arc;
         let tmp = tempfile::tempdir().unwrap();
         let data_dir = tmp.path().to_path_buf();
