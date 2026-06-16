@@ -682,28 +682,64 @@ impl TranscriptionSession {
                 // The per-model mutex here just prevents concurrent Rust access
                 // to the same Model instance.
                 let mut engine = model.lock().map_err(|e| anyhow!("stt model lock: {}", e))?;
-                // Clear GPU cache before transcription to reduce Metal command buffer
-                // errors from GPU memory pressure (prevents abort in MLX completion handler)
-                mlx_memory::clear_cache();
-                let opts = audiopipe::TranscribeOptions::default();
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    engine.transcribe_with_sample_rate(audio, sample_rate, opts)
-                }))
-                .map_err(|panic| {
-                    // Clear cache after panic to release any held GPU resources
+
+                // Chunk to 30s like the CPU Parakeet path above. The Metal backend
+                // panics with command-buffer / GPU-memory-pressure errors on long
+                // variable-length tensors — historically the top transcription crash
+                // in the field (~61 hits/2wk, "mlx transcription panic"). Bounding
+                // each transcribe to a fixed 30s tensor removes that pressure, and
+                // isolating the panic guard *per chunk* means a single bad chunk drops
+                // only its own ~30s instead of the entire batch's transcript.
+                let chunk_samples = (sample_rate as usize) * 30;
+                let chunks: Vec<&[f32]> = if audio.len() <= chunk_samples {
+                    vec![audio]
+                } else {
+                    audio.chunks(chunk_samples).collect()
+                };
+
+                let mut texts = Vec::new();
+                let mut had_success = false;
+                let mut last_err: Option<anyhow::Error> = None;
+                for chunk in chunks {
+                    // Clear GPU cache before/after each chunk to reduce Metal command
+                    // buffer errors from memory pressure (prevents abort in the MLX
+                    // completion handler) and to release resources held by a panic.
                     mlx_memory::clear_cache();
-                    let msg = panic
-                        .downcast_ref::<String>()
-                        .map(|s| s.as_str())
-                        .or_else(|| panic.downcast_ref::<&str>().copied())
-                        .unwrap_or("unknown panic");
-                    anyhow!("mlx transcription panic (likely Metal GPU error): {}", msg)
-                })?
-                .map_err(|e| anyhow!("{}", e))?;
-                // Free cached Metal buffers after each transcription to prevent
-                // unbounded GPU memory growth from variable-length audio tensors
-                mlx_memory::clear_cache();
-                Ok(result.text)
+                    let opts = audiopipe::TranscribeOptions::default();
+                    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        engine.transcribe_with_sample_rate(chunk, sample_rate, opts)
+                    }));
+                    mlx_memory::clear_cache();
+                    match outcome {
+                        Ok(Ok(result)) => {
+                            had_success = true;
+                            let text = result.text.trim().to_string();
+                            if !text.is_empty() {
+                                texts.push(text);
+                            }
+                        }
+                        Ok(Err(e)) => last_err = Some(anyhow!("{}", e)),
+                        Err(panic) => {
+                            let msg = panic
+                                .downcast_ref::<String>()
+                                .map(|s| s.as_str())
+                                .or_else(|| panic.downcast_ref::<&str>().copied())
+                                .unwrap_or("unknown panic");
+                            last_err = Some(anyhow!(
+                                "mlx transcription panic (likely Metal GPU error): {}",
+                                msg
+                            ));
+                        }
+                    }
+                }
+
+                // Any successful chunk yields a (possibly partial) transcript rather
+                // than discarding the whole batch. Only error if every chunk failed.
+                if had_success {
+                    Ok(texts.join(" "))
+                } else {
+                    Err(last_err.unwrap_or_else(|| anyhow!("mlx transcription produced no output")))
+                }
             }
 
             Self::Whisper {
