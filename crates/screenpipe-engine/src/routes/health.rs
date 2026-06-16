@@ -18,6 +18,7 @@ use tracing::{debug, warn};
 
 use screenpipe_audio::audio_manager::builder::TranscriptionMode;
 
+use crate::recording_coverage::{coverage_snapshot, CoverageSnapshot};
 use crate::server::AppState;
 use crate::ui_recorder::{
     tree_walker_snapshot, ui_recorder_status_snapshot, TreeWalkerSnapshot, UiRecorderStatus,
@@ -200,6 +201,11 @@ pub struct HealthCheckResponse {
     /// distinctly from "off" so users can tell why ui_events stopped writing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ui_recorder: Option<UiRecorderStatus>,
+    /// Recording-coverage reliability metric: what fraction of the user's
+    /// working time (recent input) had healthy screen capture. None until the
+    /// sampler has accumulated any active or idle time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recording_coverage: Option<CoverageSnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pool_stats: Option<PoolHealthInfo>,
     /// True once the write queue has flagged the disk-I/O wedge as degraded.
@@ -432,6 +438,7 @@ fn degraded_response() -> HealthCheckResponse {
         audio_pipeline: None,
         accessibility: None,
         ui_recorder: None,
+        recording_coverage: None,
         pool_stats: None,
         write_queue_degraded: false,
         write_queue_consecutive_fatal: 0,
@@ -1097,6 +1104,16 @@ async fn health_check_inner(state: &Arc<AppState>) -> HealthCheckResponse {
                 None
             }
         },
+        recording_coverage: {
+            let snap = coverage_snapshot();
+            // Only attach once the sampler has observed any wall-clock time —
+            // before that the all-zero snapshot is noise.
+            if snap.active_secs + snap.idle_secs > 0 {
+                Some(snap)
+            } else {
+                None
+            }
+        },
         audio_pipeline: if !state.audio_disabled {
             // meeting_detected / meeting_app were queried earlier (next to
             // the stall gates that depend on them) — reuse them here.
@@ -1343,6 +1360,7 @@ mod tests {
             audio_pipeline: None,
             accessibility: None,
             ui_recorder: None,
+            recording_coverage: None,
             pool_stats: None,
             write_queue_degraded: false,
             write_queue_consecutive_fatal: 0,

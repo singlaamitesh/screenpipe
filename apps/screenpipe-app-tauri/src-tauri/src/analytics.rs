@@ -430,7 +430,18 @@ impl AnalyticsManager {
             "pipeline_avg_ocr_latency_ms": pipeline["avg_ocr_latency_ms"].as_f64(),
             "pipeline_avg_db_latency_ms": pipeline["avg_db_latency_ms"].as_f64(),
             "pipeline_stall_count": pipeline["pipeline_stall_count"].as_u64(),
-            "pipeline_ocr_cache_hit_rate": pipeline["ocr_cache_hit_rate"].as_f64(),
+            // NOTE: dropped pipeline_ocr_cache_hit_rate — no OCR cache exists
+            // (both production record_ocr call sites pass cache_hits=0), so the
+            // rate is structurally always 0.0 and only misleads a dashboard.
+            // Recording-coverage reliability metric: what % of the user's
+            // working time (recent input) had healthy screen capture. Idle and
+            // asleep time are excluded from the denominator.
+            "recording_coverage_ratio": health["recording_coverage"]["coverage_ratio"].as_f64(),
+            "recording_secs": health["recording_coverage"]["recording_secs"].as_u64(),
+            "recording_active_secs": health["recording_coverage"]["active_secs"].as_u64(),
+            "recording_active_stalled_secs": health["recording_coverage"]["active_stalled_secs"].as_u64(),
+            "recording_active_paused_secs": health["recording_coverage"]["active_paused_secs"].as_u64(),
+            "recording_idle_secs": health["recording_coverage"]["idle_secs"].as_u64(),
             // DB write-queue wedge signals — the recording-stall root cause.
             // These live in /health but were never forwarded to analytics, so
             // the fleet's write-pool degradation / db-write stalls were invisible.

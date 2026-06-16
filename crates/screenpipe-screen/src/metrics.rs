@@ -279,6 +279,20 @@ impl PipelineMetrics {
         self.video_queue_depth.store(video, Ordering::Relaxed);
     }
 
+    /// Unix secs of the most recent DB write (0 = none yet). Lean accessor so
+    /// the recording-coverage sampler can read capture freshness every 5s
+    /// without taking the full `snapshot()` (which locks the latency window).
+    pub fn last_db_write_ts(&self) -> u64 {
+        self.last_db_write_ts.load(Ordering::Relaxed)
+    }
+
+    /// Seconds since the pipeline started — used by the coverage sampler's
+    /// warmup grace so a freshly-started recorder isn't classified as stalled
+    /// before the first frame lands.
+    pub fn uptime_secs(&self) -> f64 {
+        self.started_at.elapsed().as_secs_f64()
+    }
+
     /// Take a snapshot of all metrics for reporting.
     pub fn snapshot(&self) -> MetricsSnapshot {
         let frames_captured = self.frames_captured.load(Ordering::Relaxed);
@@ -531,6 +545,20 @@ mod tests {
         assert_eq!(s.ocr_empty, 1);
         // avg latency = (10 + 20 + 30) / 3 = 20ms
         assert!((s.avg_ocr_latency_ms - 20.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn lean_accessors_mirror_snapshot() {
+        let m = PipelineMetrics::new();
+        // No write yet: timestamp accessor is 0, uptime is non-negative.
+        assert_eq!(m.last_db_write_ts(), 0);
+        assert!(m.uptime_secs() >= 0.0);
+
+        // After a DB write, the lean accessor agrees with the full snapshot.
+        m.record_db_write(Duration::from_millis(2));
+        let s = m.snapshot();
+        assert_eq!(m.last_db_write_ts(), s.last_db_write_ts);
+        assert!(m.last_db_write_ts() > 0);
     }
 
     #[test]
