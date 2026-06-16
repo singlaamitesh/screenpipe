@@ -21,6 +21,7 @@ use std::{sync::Arc, time::Duration};
 use tracing::{debug, error, info, warn};
 
 use crate::{
+    routes::search::is_screenpipe_app,
     server::AppState,
     video_cache::{AudioEntry, DeviceFrame, FrameMetadata, TimeSeriesFrame},
 };
@@ -52,24 +53,6 @@ fn stream_frame_limit(requested: Option<usize>) -> usize {
     requested
         .unwrap_or(DEFAULT_STREAM_FRAME_LIMIT)
         .clamp(1, MAX_STREAM_FRAME_LIMIT)
-}
-
-fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
-    if needle.is_empty() {
-        return true;
-    }
-
-    let needle = needle.as_bytes();
-    haystack.as_bytes().windows(needle.len()).any(|window| {
-        window
-            .iter()
-            .zip(needle)
-            .all(|(left, right)| left.eq_ignore_ascii_case(right))
-    })
-}
-
-fn is_screenpipe_app_name(app_name: &str) -> bool {
-    contains_ascii_case_insensitive(app_name, "screenpipe")
 }
 
 #[derive(Debug, Serialize)]
@@ -190,7 +173,7 @@ pub(crate) fn create_time_series_frame(chunk: FrameData) -> TimeSeriesFrame {
         .ocr_entries
         .into_iter()
         // Filter out screenpipe frames at display time
-        .filter(|device_data| !is_screenpipe_app_name(&device_data.app_name))
+        .filter(|device_data| !is_screenpipe_app(&device_data.app_name))
         .map(|device_data| DeviceFrame {
             device_id: device_data.device_name,
             frame_id: chunk.frame_id,
@@ -542,7 +525,7 @@ async fn handle_stream_frames_socket(
                             drop(sent);
 
                             // Skip screenpipe's own frames
-                            if is_screenpipe_app_name(&hot_frame.app_name) {
+                            if is_screenpipe_app(&hot_frame.app_name) {
                                 continue;
                             }
 
@@ -894,14 +877,6 @@ mod tests {
             stream_frame_limit(Some(MAX_STREAM_FRAME_LIMIT + 1)),
             MAX_STREAM_FRAME_LIMIT
         );
-    }
-
-    #[test]
-    fn test_screenpipe_app_name_match_is_ascii_case_insensitive() {
-        assert!(is_screenpipe_app_name("screenpipe"));
-        assert!(is_screenpipe_app_name("SCREENPIPE Desktop"));
-        assert!(is_screenpipe_app_name("my ScreenPipe helper"));
-        assert!(!is_screenpipe_app_name("browser"));
     }
 
     #[test]
