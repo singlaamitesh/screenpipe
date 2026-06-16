@@ -868,6 +868,29 @@ impl AudioManager {
                                     error = last_err.as_deref().unwrap_or("unknown"),
                                     "audio chunk DB insert failed after 3 retries, data may be missing from timeline"
                                 );
+                                // Durable recovery: the audio file is on disk but
+                                // has no audio_chunks row, so it is invisible to the
+                                // timeline and the reconciliation candidate query
+                                // (which only sees existing rows). Persist a marker
+                                // so the reconciliation sweep re-inserts the row once
+                                // the write pool recovers. See SCREENPIPE-CLI-RC.
+                                let marker = super::reconciliation::PendingChunk {
+                                    file_path: path.clone(),
+                                    timestamp: capture_dt,
+                                };
+                                if let Err(e) =
+                                    super::reconciliation::write_pending_chunk(out, &marker)
+                                {
+                                    warn!(
+                                        "failed to persist pending-chunk recovery marker for {}: {}",
+                                        path, e
+                                    );
+                                } else {
+                                    debug!(
+                                        "queued orphaned audio chunk {} for reconciliation recovery",
+                                        path
+                                    );
+                                }
                             }
                             Some(path)
                         }

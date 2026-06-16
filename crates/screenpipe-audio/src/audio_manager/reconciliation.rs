@@ -64,6 +64,20 @@ struct PendingTranscription {
     file_path: String,
 }
 
+/// An audio file that was written to disk but whose `audio_chunks` row insert
+/// failed (e.g. write-pool timeout under load). Persisted to disk as a JSON
+/// marker so the reconciliation sweep can re-insert the row once the write pool
+/// recovers. Without this, the audio file is orphaned: it never gets a row, so
+/// it never appears on the timeline and is never transcribed (the
+/// reconciliation candidate query only sees chunks that already have rows).
+/// See SCREENPIPE-CLI-RC ("audio chunk DB insert failed after 3 retries, data
+/// may be missing from timeline").
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub(crate) struct PendingChunk {
+    pub file_path: String,
+    pub timestamp: Option<DateTime<Utc>>,
+}
+
 /// Maximum batch duration in seconds per engine.
 /// Audio is encoded as MP3 (64 kbps mono 16 kHz) before upload, so durations
 /// are bounded by the compressed size, not raw WAV.
@@ -166,6 +180,10 @@ pub async fn reconcile_untranscribed(
 
     // Retry any previously failed transcriptions before processing new chunks
     if let Some(dir) = data_dir {
+        // Re-insert audio chunks whose initial row insert was dropped under
+        // write-pool saturation first, so they become transcription candidates
+        // below in this same (or the next) sweep.
+        retry_pending_chunks(db, dir).await;
         retry_pending_transcriptions(db, dir, on_insert, metrics.as_ref()).await;
     }
 
@@ -601,6 +619,168 @@ fn write_pending(data_dir: &Path, pending: &PendingTranscription) -> std::io::Re
 fn remove_pending(data_dir: &Path, audio_chunk_id: i64) {
     let path = pending_dir(data_dir).join(format!("chunk-{}.json", audio_chunk_id));
     let _ = std::fs::remove_file(&path);
+}
+
+/// Directory holding pending-chunk markers (audio files whose initial row
+/// insert failed). Kept separate from `pending-transcriptions` because
+/// `retry_pending_transcriptions` deletes any JSON in its dir that fails to
+/// parse as a `PendingTranscription` — mixing the two would nuke these markers.
+fn pending_chunks_dir(data_dir: &Path) -> PathBuf {
+    let dir = data_dir.join("pending-chunks");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+/// Stable, unique, filesystem-safe marker filename for an audio file path.
+/// Combines a sanitized basename (for human/debug legibility) with a hash of
+/// the full path (for uniqueness — two devices can share a basename across
+/// dirs, and the sanitized form is lossy). Deterministic for a given path so
+/// repeated failures overwrite the same marker rather than piling up.
+fn pending_chunk_filename(file_path: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    file_path.hash(&mut hasher);
+    let hash = hasher.finish();
+
+    let stem = Path::new(file_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("audio");
+    let sanitized: String = stem
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(80)
+        .collect();
+    format!("{sanitized}-{hash:016x}.json")
+}
+
+/// Persist a marker for an audio file whose `audio_chunks` row insert failed,
+/// so the next reconciliation sweep can re-insert it. Written atomically
+/// (tmp + rename) so a concurrent sweep never reads a half-written marker.
+pub(crate) fn write_pending_chunk(data_dir: &Path, chunk: &PendingChunk) -> std::io::Result<()> {
+    let dir = pending_chunks_dir(data_dir);
+    let path = dir.join(pending_chunk_filename(&chunk.file_path));
+    let json = serde_json::to_string(chunk).map_err(std::io::Error::other)?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, json)?;
+    std::fs::rename(&tmp, &path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })?;
+    debug!(
+        "reconciliation: wrote pending-chunk marker for {:?} to {:?}",
+        chunk.file_path, path
+    );
+    Ok(())
+}
+
+/// Re-insert audio chunks whose initial row insert was dropped under write-pool
+/// saturation. Idempotent: a path that already has a row (inserted by the
+/// normal path on a later attempt, or recovered on a previous sweep) just has
+/// its marker cleared. A marker whose audio file no longer exists on disk
+/// (evicted by media retention) is dropped without resurrecting anything.
+/// Returns the number of chunks recovered (newly inserted this sweep).
+async fn retry_pending_chunks(db: &DatabaseManager, data_dir: &Path) -> usize {
+    let dir = pending_chunks_dir(data_dir);
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => return 0, // dir missing / unreadable — nothing to retry
+    };
+
+    let mut recovered = 0usize;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue; // skip stray .tmp files from an interrupted write
+        }
+
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(
+                    "reconciliation: failed to read pending-chunk {:?}: {}",
+                    path, e
+                );
+                continue;
+            }
+        };
+        let pending: PendingChunk = match serde_json::from_str(&content) {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(
+                    "reconciliation: failed to parse pending-chunk {:?}, removing: {}",
+                    path, e
+                );
+                let _ = std::fs::remove_file(&path);
+                continue;
+            }
+        };
+
+        // Already has a row (later attempt succeeded, or a previous sweep
+        // recovered it) — clear the marker, nothing to do.
+        match db.find_audio_chunk_id(&pending.file_path).await {
+            Ok(Some(_)) => {
+                let _ = std::fs::remove_file(&path);
+                continue;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                // DB still unhappy (likely the same saturation) — leave the
+                // marker so the next sweep retries.
+                warn!(
+                    "reconciliation: pending-chunk existence check failed for {}: {}",
+                    pending.file_path, e
+                );
+                continue;
+            }
+        }
+
+        // The audio file is gone (media eviction) — there is nothing left to
+        // re-insert, so drop the marker instead of recreating a row that points
+        // at a missing file.
+        if !Path::new(&pending.file_path).exists() {
+            debug!(
+                "reconciliation: pending-chunk audio file gone, dropping marker: {}",
+                pending.file_path
+            );
+            let _ = std::fs::remove_file(&path);
+            continue;
+        }
+
+        match db
+            .get_or_insert_audio_chunk(&pending.file_path, pending.timestamp)
+            .await
+        {
+            Ok(_) => {
+                let _ = std::fs::remove_file(&path);
+                recovered += 1;
+                debug!(
+                    "reconciliation: recovered orphaned audio chunk {}",
+                    pending.file_path
+                );
+            }
+            Err(e) => {
+                // Still failing — keep the marker for the next sweep.
+                warn!(
+                    "reconciliation: pending-chunk re-insert still failing for {}: {}",
+                    pending.file_path, e
+                );
+            }
+        }
+    }
+
+    if recovered > 0 {
+        info!(
+            "reconciliation: recovered {} orphaned audio chunk(s) from disk",
+            recovered
+        );
+    }
+    recovered
 }
 
 /// Attempt DB write, callback notification, and secondary chunk cleanup.
@@ -1333,6 +1513,169 @@ fn extract_device_from_path(file_path: &str) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── pending-chunk durable recovery (SCREENPIPE-CLI-RC) ──────────────────
+
+    async fn temp_db(dir: &Path) -> DatabaseManager {
+        let db_path = dir.join("db.sqlite");
+        DatabaseManager::new(&format!("sqlite:{}", db_path.display()), Default::default())
+            .await
+            .expect("open temp db")
+    }
+
+    /// Create a dummy audio file on disk and return its path string.
+    fn make_audio_file(dir: &Path, name: &str) -> String {
+        let p = dir.join(name);
+        std::fs::write(&p, b"not-real-audio").unwrap();
+        p.to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn pending_chunk_filename_is_stable_and_unique() {
+        let a = "/data/Display 3 (output)_2026-02-27_23-15-38.mp4";
+        let b = "/data/MacBook Mic (input)_2026-02-27_23-15-38.mp4";
+        // Stable: same path → same name across calls.
+        assert_eq!(pending_chunk_filename(a), pending_chunk_filename(a));
+        // Unique: different paths → different names.
+        assert_ne!(pending_chunk_filename(a), pending_chunk_filename(b));
+        // Filesystem-safe: no spaces/parens/slashes survive, ends in .json.
+        let name = pending_chunk_filename(a);
+        assert!(name.ends_with(".json"));
+        assert!(!name.contains(' ') && !name.contains('(') && !name.contains('/'));
+        // Same basename in different dirs must NOT collide (hash disambiguates).
+        let c = "/other/Display 3 (output)_2026-02-27_23-15-38.mp4";
+        assert_ne!(pending_chunk_filename(a), pending_chunk_filename(c));
+    }
+
+    #[tokio::test]
+    async fn recovers_orphaned_audio_chunk_from_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path();
+        let db = temp_db(data_dir).await;
+
+        let audio = make_audio_file(data_dir, "Display (output)_2026-01-01_00-00-00.mp4");
+        assert!(db.find_audio_chunk_id(&audio).await.unwrap().is_none());
+
+        write_pending_chunk(
+            data_dir,
+            &PendingChunk {
+                file_path: audio.clone(),
+                timestamp: Some(Utc::now()),
+            },
+        )
+        .unwrap();
+        // Marker exists on disk before the sweep.
+        assert_eq!(
+            std::fs::read_dir(pending_chunks_dir(data_dir))
+                .unwrap()
+                .count(),
+            1
+        );
+
+        let recovered = retry_pending_chunks(&db, data_dir).await;
+
+        assert_eq!(recovered, 1, "should re-insert exactly one orphaned chunk");
+        assert!(
+            db.find_audio_chunk_id(&audio).await.unwrap().is_some(),
+            "row must exist after recovery"
+        );
+        // Marker cleared so it isn't retried forever.
+        assert_eq!(
+            std::fs::read_dir(pending_chunks_dir(data_dir))
+                .unwrap()
+                .count(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_is_idempotent_when_row_already_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path();
+        let db = temp_db(data_dir).await;
+
+        let audio = make_audio_file(data_dir, "Mic (input)_2026-01-01_00-00-00.mp4");
+        // Row already present (the normal insert path succeeded on a later try).
+        let existing = db
+            .get_or_insert_audio_chunk(&audio, Some(Utc::now()))
+            .await
+            .unwrap();
+        write_pending_chunk(
+            data_dir,
+            &PendingChunk {
+                file_path: audio.clone(),
+                timestamp: Some(Utc::now()),
+            },
+        )
+        .unwrap();
+
+        let recovered = retry_pending_chunks(&db, data_dir).await;
+
+        assert_eq!(recovered, 0, "must not count an already-present chunk");
+        assert_eq!(
+            db.find_audio_chunk_id(&audio).await.unwrap(),
+            Some(existing),
+            "must not create a duplicate row"
+        );
+        assert_eq!(
+            std::fs::read_dir(pending_chunks_dir(data_dir))
+                .unwrap()
+                .count(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn drops_marker_when_audio_file_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path();
+        let db = temp_db(data_dir).await;
+
+        // Marker points at a file that was evicted (never created here).
+        let gone = data_dir
+            .join("evicted_2026-01-01_00-00-00.mp4")
+            .to_string_lossy()
+            .to_string();
+        write_pending_chunk(
+            data_dir,
+            &PendingChunk {
+                file_path: gone.clone(),
+                timestamp: Some(Utc::now()),
+            },
+        )
+        .unwrap();
+
+        let recovered = retry_pending_chunks(&db, data_dir).await;
+
+        assert_eq!(recovered, 0, "must not resurrect an evicted file");
+        assert!(db.find_audio_chunk_id(&gone).await.unwrap().is_none());
+        // Marker dropped so we don't retry a dead path forever.
+        assert_eq!(
+            std::fs::read_dir(pending_chunks_dir(data_dir))
+                .unwrap()
+                .count(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn corrupt_marker_is_removed_not_retried_forever() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path();
+        let db = temp_db(data_dir).await;
+
+        let dir = pending_chunks_dir(data_dir);
+        std::fs::write(dir.join("garbage.json"), b"{ not valid json").unwrap();
+
+        let recovered = retry_pending_chunks(&db, data_dir).await;
+
+        assert_eq!(recovered, 0);
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            0,
+            "corrupt marker removed"
+        );
+    }
 
     fn pending_with_diarization(
         diarization_segments: Vec<TranscriptionDiarizationSegment>,
