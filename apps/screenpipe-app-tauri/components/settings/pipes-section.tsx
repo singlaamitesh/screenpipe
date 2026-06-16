@@ -2081,7 +2081,7 @@ export function PipesSection() {
           </CardContent>
         </Card>
       ) : (
-        <div className="border border-border rounded-md divide-y divide-border">
+        <div className="rounded-lg border border-border divide-y divide-border">
           {filteredPipes.map((pipe) => {
             const recentExecs = pipeExecutions[pipe.config.name] || [];
             const isRunning = pipe.is_running || runningPipe === pipe.config.name;
@@ -2111,7 +2111,7 @@ export function PipesSection() {
             return (
             <div key={pipe.config.name} className={cn("group", !pipe.config.enabled && "opacity-50")}>
               {/* Table row */}
-              <div className="flex items-center gap-3 px-4 py-2.5 hover:bg-accent/50 transition-colors">
+              <div className="flex items-center gap-3 px-4 py-3 hover:bg-accent transition-colors">
                 {/* Status indicator — monochrome, brand-aligned */}
                 <span
                   className={cn(
@@ -2275,6 +2275,30 @@ export function PipesSection() {
                   )}
                 </span>
 
+                {/* Edit with AI — always visible (promoted out of the overflow
+                    menu) so editing your own pipe is a one-click, discoverable
+                    action: the lever that turns installers into creators. */}
+                {!isReceivedTeamPipe(pipe) && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 gap-1.5 px-2 shrink-0 text-muted-foreground hover:text-foreground"
+                    onClick={() => {
+                      posthog.capture("pipe_edit_started", { source: "row_button" });
+                      navigateHomeAndPrefill({
+                        context: "the user wants to edit their pipe",
+                        prompt: buildOptimizePrompt(pipe.config.name),
+                        displayLabel: buildOptimizeDisplayLabel(pipe.config.name),
+                        autoSend: true,
+                      });
+                    }}
+                    title="edit this pipe with ai — describe what you want to change"
+                  >
+                    <Sparkles className="h-3.5 w-3.5" />
+                    edit
+                  </Button>
+                )}
+
                 {/* Hover-reveal actions */}
                 <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
                   {/* Run / Stop button */}
@@ -2336,21 +2360,7 @@ export function PipesSection() {
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
-                      {!isReceivedTeamPipe(pipe) && (
-                        <DropdownMenuItem
-                          onClick={() => {
-                            navigateHomeAndPrefill({
-                              context: "the user wants to optimize their pipe",
-                              prompt: buildOptimizePrompt(pipe.config.name),
-                              displayLabel: buildOptimizeDisplayLabel(pipe.config.name),
-                              autoSend: true,
-                            });
-                          }}
-                        >
-                          <Sparkles className="h-3.5 w-3.5 mr-2" />
-                          optimize with ai
-                        </DropdownMenuItem>
-                      )}
+                      {/* "edit with ai" lives on the row as a visible button now */}
 
                       {/* Team sharing — own pipes can be shared, updated,
                           unshared; received team pipes are read-only and can
