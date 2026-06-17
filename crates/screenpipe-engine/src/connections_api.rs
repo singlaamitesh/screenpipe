@@ -2606,226 +2606,15 @@ async fn browser_run_navigate(
     }
 }
 
-/// JS injected by /snapshot. Walks the live DOM and produces a compact,
-/// accessibility-style outline of the page — the kind of thing the agent
-/// can reason about (and act on) without writing its own selector scraper.
-///
-/// Output: `{ title, url, tree, count, truncated }`. `tree` is plain text,
-/// capped at MAX_LINES so a giant page doesn't blow the agent's context;
-/// `count` is the number of actionable refs assigned.
-///
-/// Element refs (Playwright-MCP / Skyvern style): every *actionable* element
-/// is stamped with a fresh `data-sp-ref="eN"` attribute and rendered with a
-/// `#eN` tag in the tree. `POST /act {ref, action}` then resolves that
-/// attribute server-side — so the model targets `e7` instead of hand-writing
-/// a brittle querySelector through /eval. Refs are cleared and re-numbered on
-/// every snapshot, so they always match the latest call.
-///
-/// Token efficiency: refs only go on things you can act on; headings and
-/// named landmarks are kept for structure but carry no ref. Zero-size,
-/// fully-transparent, and negatively-offscreen (visually-hidden) nodes are
-/// dropped; below-the-fold content is kept (a Submit button under the fold
-/// is still real). State is inlined — `(disabled)`, `(checked)`,
-/// `(expanded)` — so the model needn't probe with follow-up evals.
-///
-/// Skip rules: hidden elements (display:none / visibility:hidden / aria-
-/// hidden), script/style/noscript, presentation-only roles, hidden inputs;
-/// password inputs are surfaced (so the agent can fill them) but their
-/// `value` is never emitted (it would leak the user's secret); anchors with
-/// non-navigable hrefs (`javascript:`, empty, `#`) appear as buttons.
-///
-/// Page-load race: if the user calls /snapshot right after /navigate,
-/// `document.readyState` may still be `loading`; we wait up to 5s for it
-/// to flip to interactive/complete before walking the DOM, so the agent
-/// gets the new page's outline rather than `about:blank`.
-const SNAPSHOT_SCRIPT: &str = r#"
-async function waitReady(maxMs) {
-    if (document.readyState !== 'loading') return;
-    await new Promise((resolve) => {
-        let done = false;
-        const finish = () => { if (!done) { done = true; resolve(); } };
-        document.addEventListener('DOMContentLoaded', finish, { once: true });
-        setTimeout(finish, maxMs);
-    });
-}
-await waitReady(5000);
-
-const MAX_LINES = 250;
-const MAX_DEPTH = 12;
-const out = [];
-// Non-interactive tags kept for structure/context (only when they carry an
-// accessible name — a bare unnamed landmark is pure noise).
-const structural = new Set([
-    'h1','h2','h3','h4','h5','h6','nav','main','article','section',
-    'form','fieldset','legend','summary','dialog','header','footer','aside'
-]);
-const interactiveRoles = new Set([
-    'button','link','checkbox','menuitem','menuitemcheckbox','menuitemradio',
-    'option','radio','switch','tab','textbox','combobox','searchbox','slider','spinbutton'
-]);
-const formTags = new Set(['input','textarea','select']);
-
-function clip(s, n) {
-    s = (s || '').replace(/\s+/g, ' ').trim();
-    return s.length > n ? s.slice(0, n) + '…' : s;
-}
-
-function navigableHref(el) {
-    const h = el.getAttribute('href');
-    if (!h) return '';
-    const trimmed = h.trim();
-    if (!trimmed) return '';
-    if (trimmed === '#') return '';
-    if (trimmed.toLowerCase().startsWith('javascript:')) return '';
-    return h;
-}
-
-// Rendered + roughly on-screen. Keep below-the-fold elements (legit form
-// fields / submit buttons); drop zero-size, fully transparent, and nodes
-// pushed entirely off the top/left (the classic visually-hidden trick).
-function isRendered(el, style) {
-    let rect;
-    try { rect = el.getBoundingClientRect(); } catch (_) { return true; }
-    if (rect.width < 2 || rect.height < 2) return false;
-    if (rect.bottom < 0 || rect.right < 0) return false;
-    if (style && parseFloat(style.opacity) === 0) return false;
-    return true;
-}
-
-function accessibleName(el, tag, role) {
-    const aria = el.getAttribute('aria-label');
-    if (aria) return aria;
-    const labelledby = el.getAttribute('aria-labelledby');
-    if (labelledby) {
-        const txt = labelledby.split(/\s+/).map((id) => {
-            const n = document.getElementById(id);
-            return n ? n.innerText : '';
-        }).join(' ');
-        if (txt.trim()) return txt;
-    }
-    if (tag === 'input') return el.getAttribute('placeholder') || el.getAttribute('name') || el.type || 'input';
-    if (formTags.has(tag)) return el.getAttribute('placeholder') || el.getAttribute('name') || tag;
-    if (tag === 'a' || tag === 'button' || /^h[1-6]$/.test(tag) || interactiveRoles.has(role)) {
-        return clip(el.innerText, 120);
-    }
-    return clip(el.getAttribute('name') || el.getAttribute('title') || '', 80);
-}
-
-// What the model can actually act on. Beyond semantic tags/roles we detect
-// onclick handlers, contenteditable, tabindex, and cursor:pointer leaves
-// (the div/span "buttons" SPA frameworks love) — but guard cursor:pointer so
-// wrapper elements don't each get a redundant ref.
-function isInteractive(el, tag, role, style) {
-    if (interactiveRoles.has(role)) return true;
-    if (tag === 'button' || tag === 'select' || tag === 'textarea' || tag === 'a') return true;
-    if (tag === 'input') return el.type !== 'hidden';
-    if (el.isContentEditable) return true;
-    if (el.hasAttribute('onclick')) return true;
-    const ti = el.getAttribute('tabindex');
-    if (ti !== null && ti !== '-1' && parseInt(ti, 10) >= 0) return true;
-    if ((tag === 'div' || tag === 'span' || tag === 'li' || tag === 'td')
-        && style && style.cursor === 'pointer'
-        && (el.innerText || '').trim()
-        && !el.querySelector('a,button,input,select,textarea,[role],[onclick],[tabindex]')) {
-        return true;
-    }
-    return false;
-}
-
-function stateFlags(el, tag) {
-    const flags = [];
-    if (el.disabled || el.getAttribute('aria-disabled') === 'true') flags.push('disabled');
-    const ariaChecked = el.getAttribute('aria-checked');
-    const nativeChecked = (tag === 'input' && (el.type === 'checkbox' || el.type === 'radio')) ? el.checked : null;
-    if (ariaChecked === 'true' || nativeChecked === true) flags.push('checked');
-    const expanded = el.getAttribute('aria-expanded');
-    if (expanded === 'true') flags.push('expanded');
-    else if (expanded === 'false') flags.push('collapsed');
-    if (el.getAttribute('aria-selected') === 'true') flags.push('selected');
-    if (el.required || el.getAttribute('aria-required') === 'true') flags.push('required');
-    return flags;
-}
-
-// Fresh refs every snapshot: clear last call's stamps so eN always matches
-// the tree we're returning now.
-let refCounter = 0;
-try { document.querySelectorAll('[data-sp-ref]').forEach((n) => n.removeAttribute('data-sp-ref')); } catch (_) {}
-
-function walk(el, depth) {
-    if (out.length >= MAX_LINES) return true; // signal: caller can stop
-    if (!el || el.nodeType !== 1) return false;
-    const tag = el.tagName.toLowerCase();
-    if (tag === 'script' || tag === 'style' || tag === 'noscript' || tag === 'template') return false;
-    if (el.getAttribute('aria-hidden') === 'true') return false;
-    let style;
-    try { style = getComputedStyle(el); } catch (_) { style = null; }
-    if (style && (style.display === 'none' || style.visibility === 'hidden')) return false;
-    const role = el.getAttribute('role');
-    if (role === 'presentation' || role === 'none') return false;
-    // Hidden inputs carry no UI; password inputs are actionable (login flows)
-    // but their value must never be emitted.
-    if (tag === 'input' && el.type === 'hidden') return false;
-    const isPassword = tag === 'input' && el.type === 'password';
-    // <label> duplicates its associated input's text; drop the label row but
-    // keep walking its children so a wrapped control still surfaces.
-    if (tag === 'label') {
-        for (const child of el.children) { if (walk(child, depth)) return true; }
-        return false;
-    }
-    // Unrendered wrapper: don't emit it, but a zero-size node can still hold
-    // visible children, so keep descending at the same depth.
-    if (!isRendered(el, style)) {
-        for (const child of el.children) { if (walk(child, depth)) return true; }
-        return false;
-    }
-
-    const interactive = isInteractive(el, tag, role, style);
-    const name = accessibleName(el, tag, role);
-    // Structural tags only earn a line if they're named — keeps the tree dense.
-    const include = interactive || (structural.has(tag) && name);
-    if (include) {
-        let kind;
-        if (tag === 'a') {
-            kind = role || (navigableHref(el) ? 'link' : 'button');
-        } else if (interactive && !interactiveRoles.has(role)
-                   && (tag === 'div' || tag === 'span' || tag === 'li' || tag === 'td')) {
-            kind = 'button';
-        } else {
-            kind = role || tag;
-        }
-        const href = tag === 'a' ? navigableHref(el) : '';
-        const value = (formTags.has(tag) && !isPassword) ? clip(el.value, 60) : '';
-        const flags = interactive ? stateFlags(el, tag) : [];
-
-        let ref = '';
-        if (interactive) {
-            ref = 'e' + (++refCounter);
-            try { el.setAttribute('data-sp-ref', ref); } catch (_) {}
-        }
-
-        let line = '  '.repeat(Math.min(depth, MAX_DEPTH)) + kind;
-        if (name) line += ' "' + clip(name, 100) + '"';
-        if (ref) line += ' #' + ref;
-        if (flags.length) line += ' (' + flags.join(',') + ')';
-        if (href) line += ' → ' + clip(href, 80);
-        if (value) line += ' = ' + value;
-        out.push(line);
-    }
-    for (const child of el.children) {
-        if (walk(child, depth + 1)) return true; // bubble the stop-signal up
-    }
-    return false;
-}
-walk(document.body, 0);
-
-return {
-    title: document.title || '',
-    url: location.href,
-    tree: out.join('\n'),
-    count: refCounter,
-    truncated: out.length >= MAX_LINES
-};
-"#;
+/// JS injected by GET /connections/browsers/:id/snapshot. The full source is
+/// `browser_scripts/snapshot.js` — a real file so it can be linted and run in
+/// the jsdom unit tests, not a 200-line string buried in this module. It walks
+/// the DOM (piercing open shadow roots + same-origin iframes), stamps every
+/// actionable element with a stable `data-sp-ref="eN"`, and returns
+/// `{ title, url, tree, count, truncated }`. `POST /act {ref, action}` resolves
+/// those refs server-side so the model never hand-writes a selector. See the
+/// file's header comment for the full contract, skip rules, and limits.
+const SNAPSHOT_SCRIPT: &str = include_str!("browser_scripts/snapshot.js");
 
 /// GET /connections/browsers/:id/snapshot — return a compact accessibility
 /// outline of the current page. Lets the agent answer "what's on the page?"
@@ -2872,77 +2661,19 @@ const ACT_ACTIONS: [&str; 9] = [
     "click", "fill", "type", "clear", "check", "uncheck", "select", "hover", "focus",
 ];
 
-/// Build the JS that `/act` injects to perform one action on a ref-stamped
-/// element. The ref/action/value are JSON-encoded into the script (never
-/// string-concatenated) so a page value like `"); evil()` can't break out of
-/// the literal. The element is resolved by the `data-sp-ref` attribute that
-/// [`SNAPSHOT_SCRIPT`] stamped — i.e. the model acts on what it just saw,
-/// with no selector of its own.
-///
-/// `fill`/`clear`/`select` go through the native value setter + `input`/
-/// `change` events so React/Vue controlled inputs actually register the
-/// change (assigning `.value` alone is silently dropped by their synthetic
-/// event layer).
+/// Build the JS that `/act` injects. The ref/action/value are JSON-encoded
+/// into three `const` declarations (never string-concatenated) so a page value
+/// like `"); evil()` can't break out of the literal; the rest of the logic
+/// lives in `browser_scripts/act.js` (a real file, linted + jsdom-tested). It
+/// resolves the `data-sp-ref` that [`SNAPSHOT_SCRIPT`] stamped (piercing open
+/// shadow roots + same-origin iframes) and performs one type-aware action.
 fn browser_act_script(ref_id: &str, action: &str, value: Option<&str>) -> String {
     let ref_json = serde_json::to_string(ref_id).unwrap_or_else(|_| "\"\"".to_string());
     let action_json = serde_json::to_string(action).unwrap_or_else(|_| "\"\"".to_string());
     let value_json = serde_json::to_string(&value).unwrap_or_else(|_| "null".to_string());
     format!(
-        r#"
-const REF = {ref_json};
-const ACTION = {action_json};
-const VALUE = {value_json};
-const el = document.querySelector('[data-sp-ref="' + CSS.escape(REF) + '"]');
-if (!el) {{
-    return {{ ok: false, error: "ref '" + REF + "' not found — call /snapshot again to get fresh refs" }};
-}}
-try {{ el.scrollIntoView({{ block: 'center', inline: 'center' }}); }} catch (_) {{}}
-const tag = el.tagName.toLowerCase();
-
-function setNativeValue(node, val) {{
-    const proto = node instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-    const desc = Object.getOwnPropertyDescriptor(proto, 'value');
-    if (desc && desc.set) desc.set.call(node, val); else node.value = val;
-    node.dispatchEvent(new Event('input', {{ bubbles: true }}));
-    node.dispatchEvent(new Event('change', {{ bubbles: true }}));
-}}
-
-try {{
-    if (ACTION === 'click') {{
-        el.click();
-    }} else if (ACTION === 'fill' || ACTION === 'type') {{
-        el.focus();
-        setNativeValue(el, VALUE == null ? '' : String(VALUE));
-    }} else if (ACTION === 'clear') {{
-        el.focus();
-        setNativeValue(el, '');
-    }} else if (ACTION === 'check' || ACTION === 'uncheck') {{
-        const want = ACTION === 'check';
-        if (typeof el.checked !== 'boolean') el.click();
-        else if (el.checked !== want) el.click();
-    }} else if (ACTION === 'select') {{
-        if (tag === 'select') {{
-            const want = VALUE == null ? '' : String(VALUE);
-            let matched = false;
-            for (const opt of el.options) {{
-                if (opt.value === want || (opt.textContent || '').trim() === want) {{ el.value = opt.value; matched = true; break; }}
-            }}
-            if (!matched) return {{ ok: false, error: "no <option> matching '" + want + "'" }};
-            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-        }} else {{ el.click(); }}
-    }} else if (ACTION === 'hover') {{
-        ['mouseover','mouseenter','mousemove'].forEach((t) => el.dispatchEvent(new MouseEvent(t, {{ bubbles: true }})));
-    }} else if (ACTION === 'focus') {{
-        el.focus();
-    }} else {{
-        return {{ ok: false, error: "unknown action '" + ACTION + "'" }};
-    }}
-}} catch (e) {{
-    return {{ ok: false, error: String((e && e.message) || e) }};
-}}
-return {{ ok: true, ref: REF, action: ACTION, tag: tag, url: location.href }};
-"#
+        "const REF = {ref_json};\nconst ACTION = {action_json};\nconst VALUE = {value_json};\n{body}",
+        body = include_str!("browser_scripts/act.js"),
     )
 }
 
