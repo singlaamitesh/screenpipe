@@ -60,6 +60,9 @@ export interface Announcement {
   /** markdown. rendered with the same sanitizing transform as notifications. */
   body: string;
   cta?: AnnouncementCta;
+  /** auto-close after this many ms. honored only for `banner`/`card` (modals
+   *  are meant to be acknowledged). omitted = stays until dismissed. */
+  autoDismissMs?: number;
   /** ISO-8601 instant. once passed, the announcement is never shown again. */
   expiresAt?: string;
   /** when false the user must act on the cta — no X / overlay-close.
@@ -154,6 +157,13 @@ export function parseAnnouncement(raw: unknown): Announcement | null {
 
   const cta = normalizeCta(r.cta);
   if (cta) announcement.cta = cta;
+  if (
+    typeof r.autoDismissMs === "number" &&
+    Number.isFinite(r.autoDismissMs) &&
+    r.autoDismissMs > 0
+  ) {
+    announcement.autoDismissMs = r.autoDismissMs;
+  }
   if (isNonEmptyString(r.expiresAt)) announcement.expiresAt = r.expiresAt.trim();
 
   return announcement;

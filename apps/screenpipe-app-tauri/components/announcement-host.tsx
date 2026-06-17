@@ -70,6 +70,16 @@ function AnnouncementBody({ body, className }: { body: string; className?: strin
   );
 }
 
+/** Auto-close the surface after `ms`, if set. Used by banner/card (not modal).
+ *  Re-arms only when the announcement id or the duration changes. */
+function useAutoDismiss(ms: number | undefined, onDismiss: () => void) {
+  useEffect(() => {
+    if (!ms) return;
+    const t = setTimeout(onDismiss, ms);
+    return () => clearTimeout(t);
+  }, [ms, onDismiss]);
+}
+
 function KindChip({ kind }: { kind: AnnouncementKind }) {
   const { icon: Icon, label } = KIND_META[kind];
   return (
@@ -163,6 +173,7 @@ function AnnouncementBanner({
   // never trap the user: keep the close affordance unless there's a cta to act on.
   const showClose = dismissible || !cta;
   const atBottom = announcement.position === "bottom";
+  useAutoDismiss(announcement.autoDismissMs, onDismiss);
   return (
     <div
       data-testid="announcement-banner"
@@ -237,6 +248,7 @@ function AnnouncementCard({
   const { dismissible, cta } = announcement;
   const showClose = dismissible || !cta;
   const pos = CARD_POSITION_CLASS[announcement.position ?? "bottom-right"];
+  useAutoDismiss(announcement.autoDismissMs, onDismiss);
   return (
     <div
       data-testid="announcement-card"

@@ -377,6 +377,7 @@ fn announcement_from_payload(payload: &NotifyPayload, id: &str) -> Option<serde_
         "body": payload.body,
         "cta": payload.cta,
         "dismissible": payload.dismissible,
+        "autoDismissMs": payload.auto_dismiss_ms,
         "expiresAt": payload.expires_at,
     }))
 }

@@ -64,6 +64,14 @@ describe("parseAnnouncement", () => {
     expect(parseAnnouncement(raw)).toBeNull();
   });
 
+  it("keeps a positive autoDismissMs and drops invalid ones", () => {
+    expect(parseAnnouncement({ ...VALID, autoDismissMs: 5000 })!.autoDismissMs).toBe(5000);
+    expect(parseAnnouncement({ ...VALID, autoDismissMs: 0 })!.autoDismissMs).toBeUndefined();
+    expect(parseAnnouncement({ ...VALID, autoDismissMs: -1 })!.autoDismissMs).toBeUndefined();
+    expect(parseAnnouncement({ ...VALID, autoDismissMs: "5000" })!.autoDismissMs).toBeUndefined();
+    expect(parseAnnouncement({ ...VALID, autoDismissMs: Infinity })!.autoDismissMs).toBeUndefined();
+  });
+
   it("drops a cta with no destination", () => {
     const a = parseAnnouncement({ ...VALID, cta: { label: "go" } });
     expect(a!.cta).toBeUndefined();
