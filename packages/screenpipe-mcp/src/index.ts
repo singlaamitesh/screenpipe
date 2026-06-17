@@ -467,6 +467,45 @@ const TOOLS: Tool[] = [
     },
   },
   {
+    name: "ask_user",
+    description:
+      "Pause and ask the user a question, then WAIT for their answer and return it. " +
+      "Shows an actionable notification with one button per option; clicking a button resolves this call with that option's value. " +
+      "USE WHEN: you need a decision or confirmation before doing something (send this email? which contact? approve this post?). " +
+      "Provide 2-5 concrete options and ALWAYS include a decline/skip option so the user can say no. " +
+      "Set a conservative `default_value` for unattended runs — if the user doesn't answer within `timeout_secs`, that default is returned instead of blocking forever. " +
+      "DO NOT USE for: collecting secrets/credentials (never), or free-form text answers (options only for now).",
+    annotations: { title: "Ask User", readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    inputSchema: {
+      type: "object",
+      properties: {
+        message: { type: "string", description: "The question to ask the user (markdown supported)." },
+        options: {
+          type: "array",
+          description:
+            "2-5 answer choices. Each is { label (button text the user sees), value (returned to you when chosen) }. " +
+            "Always include a decline/skip option, e.g. { label: \"Don't send\", value: \"skip\" }.",
+          items: {
+            type: "object",
+            properties: {
+              label: { type: "string", description: "Button label shown to the user." },
+              value: { type: "string", description: "Value returned to you when this option is chosen." },
+            },
+            required: ["label", "value"],
+          },
+        },
+        pipe_name: { type: "string", description: "Name of the pipe asking (shown in the notification for attribution)." },
+        timeout_secs: { type: "integer", description: "How long to wait for an answer before giving up. Default 300 (5 min), clamped to 5-3600.", default: 300 },
+        default_value: {
+          type: "string",
+          description:
+            "Value to assume if the user doesn't answer within timeout_secs. For risky or outbound actions use a SAFE value (e.g. \"skip\"). If omitted, a timeout is reported as a decline.",
+        },
+      },
+      required: ["message", "options"],
+    },
+  },
+  {
     name: "health-check",
     description:
       "Check if screenpipe is running and healthy. Returns recording status, frame/audio stats, timestamps.",
@@ -1750,6 +1789,118 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const notifResult = await notifResponse.json();
         return {
           content: [{ type: "text", text: `Notification sent: ${notifResult.message}` }],
+        };
+      }
+
+      case "ask_user": {
+        const message = String(args.message ?? "").trim();
+        if (!message) throw new Error("ask_user requires a non-empty `message`");
+        const rawOptions = Array.isArray(args.options)
+          ? (args.options as Array<{ label?: string; value?: string }>)
+          : [];
+        if (rawOptions.length === 0) {
+          throw new Error(
+            "ask_user requires at least one option ({ label, value }) so the user has something to click",
+          );
+        }
+        const options = rawOptions.map((o, i) => ({
+          label: String(o.label ?? o.value ?? `Option ${i + 1}`),
+          value: String(o.value ?? o.label ?? `option_${i + 1}`),
+        }));
+        const pipeName = args.pipe_name ? String(args.pipe_name) : undefined;
+        let timeoutSecs = Number(args.timeout_secs);
+        if (!Number.isFinite(timeoutSecs)) timeoutSecs = 300;
+        timeoutSecs = Math.max(5, Math.min(3600, Math.floor(timeoutSecs)));
+        const defaultValue =
+          args.default_value !== undefined ? String(args.default_value) : undefined;
+
+        // 1. Register the ask with the engine — this is the answer store we poll.
+        const createResp = await callAPI("/asks", {
+          method: "POST",
+          body: JSON.stringify({ message, options, pipe: pipeName }),
+        });
+        const { id: askId } = (await createResp.json()) as { id: string };
+
+        // 2. Surface it as an actionable notification. Each option becomes a
+        //    type:"api" button that POSTs the answer back to /asks/:id/answer —
+        //    the notification panel already runs api actions, so no app change.
+        const actions = options.map((o, i) => ({
+          id: `ask-${askId}-${i}`,
+          label: o.label,
+          type: "api",
+          url: `/asks/${askId}/answer`,
+          method: "POST",
+          body: { answer: o.value },
+        }));
+        try {
+          await fetch("http://localhost:11435/notify", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              title: pipeName ? `${pipeName} needs you` : "screenpipe needs you",
+              body: message,
+              type: "pipe",
+              pipe_name: pipeName,
+              // Keep the card up roughly as long as we'll wait for an answer.
+              timeout: timeoutSecs * 1000,
+              actions,
+            }),
+          });
+        } catch {
+          // Non-fatal: the ask still exists and can be answered by any local
+          // client (or the bell's history). We just couldn't pop the desktop
+          // card — likely the app isn't running.
+        }
+
+        // 3. Long-poll the engine until answered or the deadline passes.
+        const deadline = Date.now() + timeoutSecs * 1000;
+        const pollMs = 2000;
+        while (Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, pollMs));
+          let statusResp: Response;
+          try {
+            statusResp = await callAPI(`/asks/${askId}`);
+          } catch {
+            continue; // transient; keep polling until the deadline
+          }
+          const status = (await statusResp.json()) as {
+            status: string;
+            answer: string | null;
+          };
+          if (status.status === "answered" && status.answer != null) {
+            const chosen = options.find((o) => o.value === status.answer);
+            const label = chosen ? chosen.label : status.answer;
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `User answered: ${status.answer}${
+                    label !== status.answer ? ` ("${label}")` : ""
+                  }`,
+                },
+              ],
+            };
+          }
+        }
+
+        // Timed out — fall back to the agent-declared default, else signal a decline.
+        if (defaultValue !== undefined) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `No answer within ${timeoutSecs}s — using default: ${defaultValue}`,
+              },
+            ],
+          };
+        }
+        return {
+          content: [
+            {
+              type: "text",
+              text: `No answer within ${timeoutSecs}s and no default provided. Treat as declined / do not proceed.`,
+            },
+          ],
         };
       }
 

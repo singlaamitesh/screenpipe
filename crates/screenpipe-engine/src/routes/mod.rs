@@ -4,6 +4,7 @@
 
 pub mod activity_summary;
 pub mod artifacts;
+pub mod asks;
 pub mod audio;
 pub mod browser;
 pub mod capture;

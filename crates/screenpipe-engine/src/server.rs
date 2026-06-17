@@ -178,6 +178,11 @@ pub struct AppState {
     pub vault: screenpipe_vault::VaultManager,
     /// Active manually-started meeting id (set via POST /meetings/start, cleared via POST /meetings/stop)
     pub manual_meeting: Arc<tokio::sync::RwLock<Option<i64>>>,
+    /// Pending interactive "asks" from pipe agents, keyed by ask id — questions
+    /// awaiting a user answer. In-memory + ephemeral (in-session only); the
+    /// `ask_user` MCP tool creates them here and polls for the answer. See
+    /// routes/asks.rs.
+    pub ask_registry: Arc<Mutex<std::collections::HashMap<String, crate::routes::asks::Ask>>>,
     /// Browser extension bridge — relays JS eval requests to the connected extension
     pub browser_bridge: Arc<crate::routes::browser::BrowserBridge>,
     /// Registry of every browser the agent can drive — user's real browser via
@@ -621,6 +626,7 @@ impl SCServer {
                 .manual_meeting
                 .clone()
                 .unwrap_or_else(|| Arc::new(tokio::sync::RwLock::new(None))),
+            ask_registry: Arc::new(Mutex::new(std::collections::HashMap::new())),
             browser_bridge: crate::routes::browser::BrowserBridge::new(),
             browser_registry: screenpipe_connect::connections::browser::BrowserRegistry::new(),
             // Reuse the desktop-shell-supplied owned browser if present so its
@@ -783,6 +789,18 @@ impl SCServer {
             // Vision/audio pipeline metrics (not in OpenAPI spec — external types)
             .route("/vision/metrics", get(vision_metrics_handler))
             .route("/audio/metrics", get(audio_metrics_handler))
+            // Interactive asks — a pipe agent pauses to ask the user a question
+            // and polls for the answer. In-memory + in-session; see routes/asks.rs
+            // and the `ask_user` MCP tool.
+            .route(
+                "/asks",
+                get(crate::routes::asks::list_asks).post(crate::routes::asks::create_ask),
+            )
+            .route("/asks/:id", get(crate::routes::asks::get_ask))
+            .route(
+                "/asks/:id/answer",
+                axum::routing::post(crate::routes::asks::answer_ask),
+            )
             // HD recording — bound sessions (meeting / timer / prewarm-pending),
             // no indefinite mode. Every session has a natural end condition.
             // GET    /capture/hd            → current snapshot
@@ -1108,6 +1126,7 @@ impl SCServer {
                                 || path.starts_with("/frames/")
                                 || path == "/notify"
                                 || path.starts_with("/pipes/store")
+                                || path.starts_with("/asks")
                             {
                                 return next.run(req).await;
                             }
