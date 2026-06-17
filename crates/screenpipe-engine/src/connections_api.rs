@@ -2292,7 +2292,9 @@ async fn slack_send(
             _ => {
                 return (
                     StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": "No Slack channel to send to. Pass \"channel\" or reconnect Slack." })),
+                    Json(
+                        json!({ "error": "No Slack channel to send to. Pass \"channel\" or reconnect Slack." }),
+                    ),
                 );
             }
         };
@@ -2413,7 +2415,9 @@ async fn slack_user_token(
 /// Normalize a Slack Web API response. Slack returns HTTP 200 even on logical
 /// failure, with the real outcome in the `ok` field; map a few common errors to
 /// actionable hints.
-async fn slack_api_json(resp: Result<reqwest::Response, reqwest::Error>) -> (StatusCode, Json<Value>) {
+async fn slack_api_json(
+    resp: Result<reqwest::Response, reqwest::Error>,
+) -> (StatusCode, Json<Value>) {
     match resp {
         Ok(r) => {
             let body: Value = r.json().await.unwrap_or_else(|_| json!({}));
@@ -2932,7 +2936,9 @@ async fn browser_run_act(
     if ref_id.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "ok": false, "error": "missing 'ref' — get one from /snapshot (e.g. \"e7\")" })),
+            Json(
+                json!({ "ok": false, "error": "missing 'ref' — get one from /snapshot (e.g. \"e7\")" }),
+            ),
         );
     }
 
@@ -2969,7 +2975,10 @@ async fn browser_run_act(
             } else {
                 StatusCode::UNPROCESSABLE_ENTITY
             };
-            (status, Json(r.result.unwrap_or_else(|| json!({ "ok": false }))))
+            (
+                status,
+                Json(r.result.unwrap_or_else(|| json!({ "ok": false }))),
+            )
         }
         Ok(r) => (
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -4048,7 +4057,10 @@ mod tests {
     #[test]
     fn act_script_resolves_by_ref_attribute() {
         let s = browser_act_script("e7", "click", None);
-        assert!(s.contains("data-sp-ref"), "act must resolve elements by ref");
+        assert!(
+            s.contains("data-sp-ref"),
+            "act must resolve elements by ref"
+        );
         assert!(s.contains("\"e7\""), "act must embed the requested ref");
         assert!(s.contains("CSS.escape"), "act selector must be escaped");
     }
@@ -4083,7 +4095,10 @@ mod tests {
     #[test]
     fn browser_description_advertises_act_by_ref() {
         let s = format_browser_description("base", "owned-default");
-        assert!(s.contains("/act"), "description must teach the /act endpoint");
+        assert!(
+            s.contains("/act"),
+            "description must teach the /act endpoint"
+        );
         assert!(s.contains("ref"), "description must mention element refs");
         // /act sits between snapshot and the eval escape hatch.
         let snap = s.find("/snapshot").unwrap();
