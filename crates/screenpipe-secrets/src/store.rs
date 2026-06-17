@@ -544,7 +544,10 @@ mod tests {
         let store = SecretStore::open(&db_str, None).await.unwrap();
         store.set("k", b"v").await.unwrap();
         assert_eq!(store.get("k").await.unwrap().as_deref(), Some(&b"v"[..]));
-        assert!(db_path.exists(), "open() must create the db (mode=rwc parity)");
+        assert!(
+            db_path.exists(),
+            "open() must create the db (mode=rwc parity)"
+        );
     }
 
     /// Repeated opens for the same path reuse ONE pool: total connections stay

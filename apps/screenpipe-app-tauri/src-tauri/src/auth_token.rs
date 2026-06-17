@@ -96,7 +96,9 @@ fn read_encryption_key() -> Option<[u8; 32]> {
 /// the ad-hoc-pool churn that corrupts `db.sqlite` (#4263).
 async fn secret_store_at(data_dir: &Path, key: Option<[u8; 32]>) -> Option<SecretStore> {
     let db_path = data_dir.join("db.sqlite");
-    SecretStore::open(&db_path.to_string_lossy(), key).await.ok()
+    SecretStore::open(&db_path.to_string_lossy(), key)
+        .await
+        .ok()
 }
 
 /// Persist (or clear) the token in the SecretStore at `data_dir`.
