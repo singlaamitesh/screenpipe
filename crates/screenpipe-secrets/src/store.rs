@@ -34,13 +34,12 @@ fn secret_pools() -> &'static AsyncMutex<HashMap<String, SqlitePool>> {
 
 /// Connection options for a secret-store pool. Mirrors the safe subset of the
 /// engine `DatabaseManager` connect options so two pools over the same file
-/// never disagree on journal mode or memory-mapping:
-///   * WAL + a real `busy_timeout` so a writer WAITS for the lock instead of
-///     failing with "database is locked",
-///   * `synchronous=NORMAL` (safe under WAL),
-///   * `mmap_size=0` — memory-mapped writes are a known corruption source and
-///     are disabled fleet-wide; never re-enable it on a side pool.
-/// `create_if_missing` preserves the old `?mode=rwc` behavior exactly.
+/// never disagree on journal mode or memory-mapping: WAL with a real
+/// `busy_timeout` (a writer WAITS for the lock instead of failing with
+/// "database is locked"), `synchronous=NORMAL` (safe under WAL), and
+/// `mmap_size=0` (memory-mapped writes are a known corruption source, disabled
+/// fleet-wide — never re-enable on a side pool). `create_if_missing` preserves
+/// the old `?mode=rwc` behavior exactly.
 fn secret_connect_options(db_path: &str) -> SqliteConnectOptions {
     SqliteConnectOptions::new()
         .filename(db_path)
