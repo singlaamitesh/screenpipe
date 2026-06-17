@@ -152,11 +152,18 @@ function AnnouncementBanner({
 }) {
   const { icon: Icon, label } = KIND_META[announcement.kind];
   const { dismissible, cta } = announcement;
+  const atBottom = announcement.position === "bottom";
   return (
     <div
       data-testid="announcement-banner"
+      data-position={atBottom ? "bottom" : "top"}
       role="status"
-      className="fixed inset-x-0 top-0 z-[60] flex items-center justify-between gap-3 border-b border-border bg-background px-4 py-2 text-sm shadow-sm shadow-black/5"
+      className={cn(
+        "fixed inset-x-0 z-[60] flex items-center justify-between gap-3 bg-background px-4 py-2 text-sm",
+        atBottom
+          ? "bottom-0 border-t border-border shadow-[0_-6px_20px_-10px_rgba(0,0,0,0.18)]"
+          : "top-0 border-b border-border shadow-sm shadow-black/5",
+      )}
     >
       <div className="flex min-w-0 items-center gap-2">
         <Icon className="h-4 w-4 shrink-0 text-foreground" />
@@ -195,23 +202,104 @@ function AnnouncementBanner({
   );
 }
 
+const CARD_POSITION_CLASS: Record<
+  NonNullable<Announcement["position"]> & string,
+  string
+> = {
+  "top-left": "top-4 left-4",
+  "top-right": "top-4 right-4",
+  "bottom-left": "bottom-4 left-4",
+  "bottom-right": "bottom-4 right-4",
+  // banner positions never reach the card, but the map must be total.
+  top: "top-4 right-4",
+  bottom: "bottom-4 right-4",
+};
+
+function AnnouncementCard({
+  announcement,
+  onDismiss,
+  onCta,
+}: {
+  announcement: Announcement;
+  onDismiss: () => void;
+  onCta: () => void;
+}) {
+  const { dismissible, cta } = announcement;
+  const pos = CARD_POSITION_CLASS[announcement.position ?? "bottom-right"];
+  return (
+    <div
+      data-testid="announcement-card"
+      data-position={announcement.position ?? "bottom-right"}
+      role="status"
+      className={cn(
+        "fixed z-[60] w-[340px] max-w-[calc(100vw-2rem)] border border-border bg-background p-4 shadow-lg shadow-black/5",
+        pos,
+      )}
+    >
+      <div className="mb-2 flex items-start justify-between gap-2">
+        <KindChip kind={announcement.kind} />
+        {dismissible && (
+          <button
+            type="button"
+            aria-label="dismiss"
+            data-testid="announcement-dismiss"
+            onClick={onDismiss}
+            className="-mr-1 -mt-1 rounded-sm p-1 text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        )}
+      </div>
+      <div className="mb-1 font-mono text-sm font-medium lowercase">
+        {announcement.title}
+      </div>
+      <AnnouncementBody body={announcement.body} className="text-[13px]" />
+      {cta && (
+        <div className="mt-3">
+          <Button
+            size="sm"
+            className="h-7"
+            data-testid="announcement-cta"
+            onClick={onCta}
+          >
+            {cta.label}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * Global host for remote announcements. Reads the current announcement (from
- * the PostHog `app-announcement` flag) and renders it as a modal or a top
- * banner. Mounted once in app/layout.tsx. Renders nothing when there is no
- * undismissed announcement, so it is free when idle.
+ * the PostHog `app-announcement` flag) and renders it as a centered modal, a
+ * full-width banner (top/bottom), or a corner card — driven by the payload's
+ * `surface` + `position`. Mounted once in app/layout.tsx. Renders nothing when
+ * there is no undismissed announcement, so it is free when idle.
  */
 export function AnnouncementHost() {
   const { announcement, dismiss, activateCta } = useAnnouncement();
   if (!announcement) return null;
 
-  return announcement.surface === "banner" ? (
-    <AnnouncementBanner
-      announcement={announcement}
-      onDismiss={dismiss}
-      onCta={activateCta}
-    />
-  ) : (
+  if (announcement.surface === "banner") {
+    return (
+      <AnnouncementBanner
+        announcement={announcement}
+        onDismiss={dismiss}
+        onCta={activateCta}
+      />
+    );
+  }
+  if (announcement.surface === "card") {
+    return (
+      <AnnouncementCard
+        announcement={announcement}
+        onDismiss={dismiss}
+        onCta={activateCta}
+      />
+    );
+  }
+  return (
     <AnnouncementModal
       announcement={announcement}
       onDismiss={dismiss}

@@ -76,6 +76,31 @@ describe("parseAnnouncement", () => {
   });
 });
 
+describe("position normalization", () => {
+  it("modal has no position", () => {
+    expect(parseAnnouncement({ id: "x", title: "t", body: "b", surface: "modal" })!.position).toBeUndefined();
+  });
+  it("banner defaults to top and accepts bottom", () => {
+    expect(parseAnnouncement({ id: "x", title: "t", body: "b", surface: "banner" })!.position).toBe("top");
+    expect(parseAnnouncement({ id: "x", title: "t", body: "b", surface: "banner", position: "bottom" })!.position).toBe("bottom");
+  });
+  it("banner coerces an invalid/corner position to top", () => {
+    expect(parseAnnouncement({ id: "x", title: "t", body: "b", surface: "banner", position: "bottom-left" })!.position).toBe("top");
+  });
+  it("card defaults to bottom-right and accepts any corner", () => {
+    expect(parseAnnouncement({ id: "x", title: "t", body: "b", surface: "card" })!.position).toBe("bottom-right");
+    for (const p of ["top-left", "top-right", "bottom-left", "bottom-right"]) {
+      expect(parseAnnouncement({ id: "x", title: "t", body: "b", surface: "card", position: p })!.position).toBe(p);
+    }
+  });
+  it("card coerces an invalid/banner position to bottom-right", () => {
+    expect(parseAnnouncement({ id: "x", title: "t", body: "b", surface: "card", position: "top" })!.position).toBe("bottom-right");
+  });
+  it("accepts card as a surface", () => {
+    expect(parseAnnouncement({ id: "x", title: "t", body: "b", surface: "card" })!.surface).toBe("card");
+  });
+});
+
 describe("isExpired", () => {
   it("is false without expiresAt", () => {
     expect(isExpired(parseAnnouncement(VALID)!, NOW)).toBe(false);

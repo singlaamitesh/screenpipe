@@ -14,10 +14,26 @@
  *  Grayscale, differentiated by shape not color (see DESIGN.md). */
 export type AnnouncementKind = "news" | "tip" | "reminder";
 
-/** How the announcement is surfaced. `modal` is a centered, focus-stealing
- *  dialog (use sparingly, for things the user should not miss). `banner` is a
- *  quiet top strip that does not block interaction. */
-export type AnnouncementSurface = "modal" | "banner";
+/** How the announcement is surfaced.
+ *  - `modal`  — centered, focus-stealing dialog. use sparingly, for things the
+ *               user should not miss.
+ *  - `banner` — full-width strip that does not block interaction. placed at the
+ *               top or bottom (see `position`).
+ *  - `card`   — compact floating card docked in a corner (see `position`).
+ *               the quietest surface — apple/codex-style corner notice. */
+export type AnnouncementSurface = "modal" | "banner" | "card";
+
+/** Where a `banner` sits. */
+export type BannerPosition = "top" | "bottom";
+/** Which corner a `card` docks in. */
+export type CardPosition =
+  | "top-left"
+  | "top-right"
+  | "bottom-left"
+  | "bottom-right";
+/** Placement hint. Meaningful for `banner` (top/bottom) and `card` (corners);
+ *  ignored for `modal`, which is always centered. */
+export type AnnouncementPosition = BannerPosition | CardPosition;
 
 export interface AnnouncementCta {
   /** button label. shown UPPERCASE by the host per brand. */
@@ -37,6 +53,9 @@ export interface Announcement {
   kind: AnnouncementKind;
   /** default "modal". */
   surface: AnnouncementSurface;
+  /** placement for banner/card. defaulted by surface ("top" for banner,
+   *  "bottom-right" for card). undefined for modal. */
+  position?: AnnouncementPosition;
   title: string;
   /** markdown. rendered with the same sanitizing transform as notifications. */
   body: string;
@@ -49,7 +68,33 @@ export interface Announcement {
 }
 
 const KINDS: readonly AnnouncementKind[] = ["news", "tip", "reminder"];
-const SURFACES: readonly AnnouncementSurface[] = ["modal", "banner"];
+const SURFACES: readonly AnnouncementSurface[] = ["modal", "banner", "card"];
+const BANNER_POSITIONS: readonly BannerPosition[] = ["top", "bottom"];
+const CARD_POSITIONS: readonly CardPosition[] = [
+  "top-left",
+  "top-right",
+  "bottom-left",
+  "bottom-right",
+];
+
+/** Resolve a placement valid for the surface, falling back to that surface's
+ *  default. Modal has no placement. */
+function normalizePosition(
+  surface: AnnouncementSurface,
+  raw: unknown,
+): AnnouncementPosition | undefined {
+  if (surface === "banner") {
+    return BANNER_POSITIONS.includes(raw as BannerPosition)
+      ? (raw as BannerPosition)
+      : "top";
+  }
+  if (surface === "card") {
+    return CARD_POSITIONS.includes(raw as CardPosition)
+      ? (raw as CardPosition)
+      : "bottom-right";
+  }
+  return undefined;
+}
 
 /** localStorage key holding the array of dismissed announcement ids. Suffixed
  *  with a version so the shape can evolve without colliding with old data. */
@@ -95,6 +140,8 @@ export function parseAnnouncement(raw: unknown): Announcement | null {
     ? (r.surface as AnnouncementSurface)
     : "modal";
 
+  const position = normalizePosition(surface, r.position);
+
   const announcement: Announcement = {
     id: r.id.trim(),
     kind,
@@ -103,6 +150,7 @@ export function parseAnnouncement(raw: unknown): Announcement | null {
     body: r.body,
     dismissible: r.dismissible === false ? false : true,
   };
+  if (position) announcement.position = position;
 
   const cta = normalizeCta(r.cta);
   if (cta) announcement.cta = cta;
