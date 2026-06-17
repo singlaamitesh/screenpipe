@@ -9,14 +9,16 @@
 //! redacted text and the corresponding `*_redacted_at` timestamp is
 //! stamped.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use screenpipe_redact::{
     adapters::regex::RegexRedactor,
     pipeline::Pipeline,
     worker::{TargetTable, Worker, WorkerConfig, ALL_TARGET_TABLES},
-    Pseudonymizer, Redactor,
+    Pseudonymizer, RedactError, RedactionMap, RedactionOutput, Redactor,
 };
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::Row;
@@ -386,4 +388,119 @@ async fn worker_writes_consistent_pseudonym_tokens() {
     let t3 = tok(&texts[2]);
     assert_eq!(t1, t2, "same secret must map to the same token across rows");
     assert_ne!(t1, t3, "different secrets must map to different tokens");
+}
+
+/// Wraps a real `Pipeline` and counts how often each detection entry
+/// point runs, so the test can prove the frame pass detects **once**.
+struct CountingPipeline {
+    inner: Pipeline,
+    /// `redact_with_map` calls = per-frame detections.
+    map_calls: AtomicUsize,
+    /// direct `redact_batch` calls = independent (non-propagated) passes.
+    batch_calls: AtomicUsize,
+}
+
+#[async_trait]
+impl Redactor for CountingPipeline {
+    fn name(&self) -> &str {
+        "counting"
+    }
+    fn version(&self) -> u32 {
+        1
+    }
+    async fn redact_batch(&self, texts: &[String]) -> Result<Vec<RedactionOutput>, RedactError> {
+        self.batch_calls.fetch_add(1, Ordering::SeqCst);
+        self.inner.redact_batch(texts).await
+    }
+    async fn redact_with_map(
+        &self,
+        text: &str,
+    ) -> Result<Option<(RedactionOutput, RedactionMap)>, RedactError> {
+        self.map_calls.fetch_add(1, Ordering::SeqCst);
+        // Delegates to the inner Pipeline, whose own `redact_batch` runs
+        // the detection — NOT this wrapper's, so `batch_calls` stays 0
+        // unless something redacts a column independently.
+        self.inner.redact_with_map(text).await
+    }
+}
+
+/// website#291: the worker detects once on `full_text` and propagates the
+/// redaction to the same frame's `accessibility_text` — no second model
+/// pass. Asserts both columns are redacted while detection ran exactly
+/// once and `accessibility_text` was never redacted independently.
+#[tokio::test]
+async fn frame_fulltext_redaction_propagates_to_accessibility_once() {
+    let pool = setup_db().await;
+    // accessibility_text ⊆ full_text (full_text = accessibility || ocr),
+    // both carrying the same secret — mirrors how capture assembles them.
+    let acc = "AXStaticText[login sk-proj-AbCdEf123456GhIjKlMnOp]";
+    let full = format!("{acc}\nocr: dashboard for sk-proj-AbCdEf123456GhIjKlMnOp");
+    sqlx::query("INSERT INTO frames (id, full_text, accessibility_text) VALUES (1, ?, ?)")
+        .bind(&full)
+        .bind(acc)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let redactor = Arc::new(CountingPipeline {
+        inner: Pipeline::regex_only(), // secrets-only; regex catches the key
+        map_calls: AtomicUsize::new(0),
+        batch_calls: AtomicUsize::new(0),
+    });
+    let cfg = WorkerConfig {
+        batch_size: 16,
+        idle_between_batches: Duration::from_millis(1),
+        poll_interval: Duration::from_millis(20),
+        // FullText first so it pre-clears accessibility before the
+        // Accessibility fallback pass (this is also ALL_TARGET_TABLES' order).
+        tables: vec![TargetTable::FullText, TargetTable::Accessibility],
+        ..Default::default()
+    };
+    let worker = Worker::new(pool.clone(), redactor.clone(), cfg);
+    let handle = worker.spawn();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    handle.abort();
+
+    let row = sqlx::query(
+        "SELECT full_text, full_text_redacted_at, accessibility_text, accessibility_redacted_at \
+         FROM frames WHERE id = 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let full_red: String = row.get(0);
+    let full_when: Option<i64> = row.get(1);
+    let acc_red: String = row.get(2);
+    let acc_when: Option<i64> = row.get(3);
+
+    // Both columns redacted, no raw secret anywhere.
+    assert!(
+        full_red.contains("[SECRET]"),
+        "full_text not redacted: {full_red:?}"
+    );
+    assert!(
+        acc_red.contains("[SECRET]"),
+        "accessibility_text not redacted: {acc_red:?}"
+    );
+    assert!(!full_red.contains("sk-proj-AbCdEf123456GhIjKlMnOp"));
+    assert!(
+        !acc_red.contains("sk-proj-AbCdEf123456GhIjKlMnOp"),
+        "raw secret survived in accessibility_text: {acc_red:?}"
+    );
+    assert!(
+        full_when.is_some() && acc_when.is_some(),
+        "both watermarks must be stamped"
+    );
+
+    // The whole point: ONE detection, propagated — not two.
+    assert_eq!(
+        redactor.map_calls.load(Ordering::SeqCst),
+        1,
+        "full_text should be detected exactly once"
+    );
+    assert_eq!(
+        redactor.batch_calls.load(Ordering::SeqCst),
+        0,
+        "accessibility_text must be propagated, never independently redacted"
+    );
 }
