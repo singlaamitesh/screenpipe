@@ -73,4 +73,14 @@ export const DATASET: { prompt: string; label: Label }[] = [
   { prompt: 'how would you shard a 17M-row sqlite table that can no longer build indexes due to memory', label: 'hard' },
   { prompt: 'write a CUDA kernel sketch for batched cosine similarity and explain the memory layout', label: 'hard' },
   { prompt: 'design a privacy-preserving way to train on user data without ever seeing raw inputs', label: 'hard' },
+
+  // ── non-English (validates the multilingual bge-m3 embedding) ──
+  { prompt: 'merci beaucoup', label: 'trivial' },                                                   // FR thanks
+  { prompt: 'danke dir', label: 'trivial' },                                                        // DE thanks
+  { prompt: 'résume ma journée de travail', label: 'normal' },                                       // FR summarize my workday
+  { prompt: 'was habe ich heute gemacht', label: 'normal' },                                         // DE what did I do today
+  { prompt: 'traduce "hola" al inglés', label: 'normal' },                                           // ES translate hola
+  { prompt: 'écris une requête SQL pour trouver mes 5 applications les plus utilisées', label: 'hard' }, // FR write SQL
+  { prompt: 'erkläre warum mein docker build langsam ist und wie ich layer-caching nutze', label: 'hard' }, // DE docker slow + caching
+  { prompt: 'prouve que la somme des n premiers nombres impairs vaut n au carré', label: 'hard' },   // FR prove n^2
 ];

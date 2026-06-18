@@ -9,15 +9,18 @@
 
 import { pipeline } from '@huggingface/transformers';
 import { DATASET, type Label } from './dataset';
-import { scoreDifficulty, buildCentroids, nearestLabel, type Tier } from '../src/handlers/difficulty-router';
+import { scoreDifficulty, buildCentroids, nearestLabel, shouldEmbed, finalizeTier, type Tier } from '../src/handlers/difficulty-router';
+
+// Local proxy for the worker's @cf/baai/bge-m3 (multilingual). Same model family.
+const MODEL = 'Xenova/bge-m3';
 
 const TIERS: Tier[] = ['trivial', 'normal', 'hard'];
 const EFF: Record<Tier, number> = { trivial: 0.035, normal: 0.64, hard: 3.23 }; // eff $/Mtok
 const IQ: Record<Tier, number> = { trivial: 30, normal: 50, hard: 61 };
 const FLAT = EFF.normal; // baseline: everything on glm-5
 
-console.log('loading bge-base-en-v1.5 (first run downloads ~100MB)…');
-const extractor = await pipeline('feature-extraction', 'Xenova/bge-base-en-v1.5');
+console.log(`loading ${MODEL} (first run downloads the model)…`);
+const extractor = await pipeline('feature-extraction', MODEL);
 const embed = async (texts: string[]): Promise<number[][]> => {
   const out: any = await extractor(texts, { pooling: 'mean', normalize: true });
   return out.tolist();
@@ -26,12 +29,19 @@ const embed = async (texts: string[]): Promise<number[][]> => {
 const centroids = await buildCentroids(embed);
 const promptEmbeds = await embed(DATASET.map((d) => d.prompt));
 
-type Pred = { actual: Label; heur: Tier; emb: Tier };
-const preds: Pred[] = DATASET.map((d, i) => ({
-  actual: d.label,
-  heur: scoreDifficulty(d.prompt).tier,
-  emb: nearestLabel(promptEmbeds[i], centroids),
-}));
+type Pred = { actual: Label; heur: Tier; emb: Tier; hybrid: Tier; embedFired: boolean };
+const preds: Pred[] = DATASET.map((d, i) => {
+  const h = scoreDifficulty(d.prompt);
+  const embTier = nearestLabel(promptEmbeds[i], centroids);
+  const fired = shouldEmbed(h.score, h.tier, d.prompt);
+  return {
+    actual: d.label,
+    heur: h.tier,
+    emb: embTier,
+    hybrid: finalizeTier(h, fired ? embTier : null, false), // exact production decision
+    embedFired: fired,
+  };
+});
 
 function report(name: string, get: (p: Pred) => Tier) {
   const n = preds.length;
@@ -69,4 +79,8 @@ console.log(`\n=== DIFFICULTY ROUTER BENCHMARK (n=${DATASET.length}) ===`);
 console.log(`labels: ${TIERS.map((t) => `${t}=${DATASET.filter((d) => d.label === t).length}`).join('  ')}`);
 console.log(`baseline flat glm-5: 0% hard recall (no escalation), $${FLAT}/Mtok, IQ 50 everywhere`);
 report('HEURISTIC (regex, 0 latency)', (p) => p.heur);
-report('EMBEDDING (bge centroid)', (p) => p.emb);
+report('EMBEDDING (bge centroid, every req)', (p) => p.emb);
+report('HYBRID (heuristic-gated — PRODUCTION path)', (p) => p.hybrid);
+
+const fired = preds.filter((p) => p.embedFired).length;
+console.log(`\n=== HYBRID embed-call rate: ${(100 * fired / preds.length).toFixed(0)}% of requests (${fired}/${preds.length}) hit Workers AI; the rest pay 0 added latency ===`);

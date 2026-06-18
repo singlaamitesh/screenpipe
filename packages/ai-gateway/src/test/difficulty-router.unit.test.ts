@@ -5,7 +5,7 @@
 import { describe, it, expect } from 'bun:test';
 import {
   scoreDifficulty, routeTier, lastUserText, cosineSim, meanVector, nearestLabel,
-  TIER_HEAD, TIER_EXAMPLES, type Tier,
+  shouldEmbed, finalizeTier, TIER_HEAD, TIER_EXAMPLES, type Tier,
 } from '../handlers/difficulty-router';
 
 describe('difficulty-router heuristic', () => {
@@ -40,9 +40,44 @@ describe('routeTier kill switch (no Workers AI needed)', () => {
     expect(await routeTier([{ role: 'user', content: 'hi' }], { ROUTER_MODE: 'heuristic' })).toBe('trivial');
     expect(await routeTier([{ role: 'user', content: 'debug this segfault and explain the root cause' }], { ROUTER_MODE: 'heuristic' })).toBe('hard');
   });
-  it('embedding mode fails safe to normal when env.AI throws', async () => {
+  it('embedding mode fails safe to heuristic when env.AI throws (on a borderline prompt)', async () => {
+    // "write a SQL query" is borderline (code 0.40) → gate fires the embed → AI throws → fall back to heuristic 'normal'
     const env = { ROUTER_MODE: 'embedding', AI: { run: async () => { throw new Error('no AI'); } } };
-    expect(await routeTier([{ role: 'user', content: 'anything' }], env)).toBe('normal');
+    expect(await routeTier([{ role: 'user', content: 'write a SQL query' }], env)).toBe('normal');
+  });
+  it('embedding mode does NOT call Workers AI for confident verdicts (gate skips)', async () => {
+    let called = 0;
+    const env = { ROUTER_MODE: 'embedding', AI: { run: async () => { called++; return { data: [[1]] }; } } };
+    await routeTier([{ role: 'user', content: 'hi' }], env);                                  // trivial — skip
+    await routeTier([{ role: 'user', content: 'summarize what I worked on today' }], env);    // clearly normal — skip
+    await routeTier([{ role: 'user', content: 'debug this segfault, explain the root cause' }], env); // clearly hard — skip
+    expect(called).toBe(0);
+  });
+  it('embedding mode times out to the heuristic verdict when env.AI hangs', async () => {
+    const env = { ROUTER_MODE: 'embedding', AI: { run: () => new Promise(() => {}) } }; // never resolves
+    const t0 = performance.now();
+    const tier = await routeTier([{ role: 'user', content: 'write a SQL query' }], env);     // borderline → embed → hang → timeout
+    expect(tier).toBe('normal');
+    expect(performance.now() - t0).toBeLessThan(1000); // bounded by EMBED_TIMEOUT_MS
+  });
+  it('tool-use floor: never downgrades a function-calling request to trivial', async () => {
+    expect(await routeTier([{ role: 'user', content: 'hi' }], { ROUTER_MODE: 'heuristic' }, { hasTools: true })).toBe('normal');
+    expect(await routeTier([{ role: 'user', content: 'hi' }], { ROUTER_MODE: 'heuristic' }, { hasTools: false })).toBe('trivial');
+  });
+});
+
+describe('gate + finalize logic (pure)', () => {
+  it('shouldEmbed: borderline band + non-English safety net, never trivial/confident-hard', () => {
+    expect(shouldEmbed(0, 'trivial')).toBe(false);                          // trivial → skip
+    expect(shouldEmbed(0.1, 'normal', 'what is the weather')).toBe(false);  // clearly normal English → skip
+    expect(shouldEmbed(0.3, 'normal', 'write a SQL query')).toBe(true);     // borderline → embed
+    expect(shouldEmbed(0.5, 'hard', 'debug this')).toBe(false);             // confident hard → skip
+    expect(shouldEmbed(0, 'normal', 'écris une requête SQL')).toBe(true);   // non-English (accent) → embed even at score 0
+  });
+  it('finalizeTier merges the embed verdict when present, else heuristic, + tool floor', () => {
+    expect(finalizeTier({ tier: 'normal', score: 0.3 }, 'hard', false)).toBe('hard'); // embed consulted → use it
+    expect(finalizeTier({ tier: 'normal', score: 0.1 }, null, false)).toBe('normal'); // not consulted → heuristic
+    expect(finalizeTier({ tier: 'trivial', score: 0 }, null, true)).toBe('normal');   // tool floor
   });
 });
 

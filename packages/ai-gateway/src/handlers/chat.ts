@@ -476,7 +476,8 @@ export async function handleChatCompletions(
     // enabled, it promotes a tier head (e.g. opus for hard, gpt-5-nano for trivial)
     // and keeps the existing waterfall as the cascade fallback.
     if (!hasImages(body) && !useBackgroundChain) {
-      const tier = await routeTier(body.messages, env);
+      const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
+      const tier = await routeTier(body.messages, env, { hasTools });
       if (tier !== 'normal') chain = [TIER_HEAD[tier], ...chain.filter((m) => m !== TIER_HEAD[tier])];
     }
     const result = await runChain(chain, body, env, 'auto', flexEligible);
