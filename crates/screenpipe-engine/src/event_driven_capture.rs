@@ -1901,15 +1901,19 @@ async fn do_capture(
         capture_dur, params.monitor_id
     );
 
-    // When an ignored window covers most of a monitor, SCK replaces its
-    // pixels with black.  The resulting frame is nearly all-black — storing
-    // it wastes the tree walk, OCR, DB write, and produces ugly black frames
-    // in the timeline.  Detect this cheaply by sampling pixels: if >95% are
-    // near-black, skip everything but still return the image so the frame
-    // comparer stays updated (prevents re-triggering on the same black frame).
-    if is_frame_mostly_black(&image) {
+    // Skip frames that are unusable for indexing.  Two cases:
+    //   1. Near-all-black — an ignored window covering the monitor; SCK fills
+    //      its pixels black.
+    //   2. A flat green "garbage" band anchored to the bottom of the frame —
+    //      what a truncated / partially-written capture decodes to (users
+    //      report screenshots whose lower portion is solid green).
+    // Storing either wastes the tree walk, OCR, and DB write and surfaces an
+    // ugly frame in the timeline.  Detect cheaply by sampling pixels, skip the
+    // write, but still return the image so the frame comparer stays updated
+    // (prevents re-triggering on the same bad frame).
+    if is_frame_corrupt(&image) {
         debug!(
-            "captured frame is mostly black on monitor {} — skipping DB write (likely ignored window covering screen)",
+            "captured frame is corrupt (black or green decode-garbage band) on monitor {} — skipping DB write",
             params.monitor_id
         );
         return Ok(CaptureOutput {
@@ -2379,6 +2383,117 @@ fn is_frame_mostly_black(image: &image::DynamicImage) -> bool {
 
     let ratio = black as f64 / total as f64;
     ratio > 0.95
+}
+
+/// A captured frame is "corrupt" — unusable for indexing — if it is either
+/// near-all-black (see [`is_frame_mostly_black`]) or carries the flat green
+/// decode-garbage band described in [`has_decode_garbage_band`].
+fn is_frame_corrupt(image: &image::DynamicImage) -> bool {
+    is_frame_mostly_black(image) || has_decode_garbage_band(image)
+}
+
+/// True if `px` is a green-dominant, red/blue-suppressed pixel — the color a
+/// zeroed-chroma / truncated-JPEG fill takes. Zeroed YUV420 chroma decodes to
+/// roughly `(0, 135..255, 0)` in RGB, so we match a wide green range with both
+/// other channels held low. The predicate is intentionally loose; the
+/// flat-color (spread) check in [`has_decode_garbage_band`] is what keeps real
+/// green content from being flagged.
+fn is_garbage_green(px: [u8; 3]) -> bool {
+    let [r, g, b] = px;
+    g >= 60
+        && r <= 90
+        && b <= 90
+        && g >= r.saturating_add(45)
+        && g >= b.saturating_add(45)
+}
+
+/// Detect the flat green band a truncated / partial frame decode leaves behind.
+///
+/// A truncated MJPEG frame (or a partially written capture buffer) decodes to
+/// normal content at the top and a single flat green fill for every row past
+/// the truncation point — always anchored to the BOTTOM of the frame. We look
+/// for exactly that: a contiguous run of bottom rows that are (a) overwhelmingly
+/// `is_garbage_green` pixels and (b) nearly all the *same* color. Real green
+/// content (terminals, green-screen backdrops, foliage) has texture and varied
+/// brightness; a decode fill does not, so the color-spread check is the real
+/// discriminator. Requiring the band to span ≥20% of the height and ≥3 sampled
+/// rows keeps green docks / banners / success toasts from tripping it.
+///
+/// Skipping a frame is cheap (we re-capture within the capture interval), so a
+/// rare false positive on a genuinely uniform full-green screen only costs one
+/// skipped capture — far better than indexing and surfacing the green garbage.
+fn has_decode_garbage_band(image: &image::DynamicImage) -> bool {
+    let rgb = image.to_rgb8();
+    let (w, h) = rgb.dimensions();
+    // Too small to reason about a "band"; the black check covers tiny frames.
+    if w == 0 || h < 8 {
+        return false;
+    }
+
+    // Sample the same ~15-wide grid as the black check, but keep rows separate
+    // so we can find a contiguous band and measure its color spread per row.
+    const ROWS: usize = 15;
+    let step_x = (w / 15).max(1);
+    let step_y = (h / ROWS as u32).max(1);
+
+    // Per sampled row: fraction of sampled pixels that are garbage-green, and
+    // the min/max of each channel across those green pixels.
+    let mut green_frac = [0f64; ROWS];
+    let mut row_min = [[255u8; 3]; ROWS];
+    let mut row_max = [[0u8; 3]; ROWS];
+
+    let mut sampled_rows = 0usize;
+    let mut y = 0;
+    while y < h && sampled_rows < ROWS {
+        let mut total = 0u32;
+        let mut green = 0u32;
+        let mut x = 0;
+        while x < w {
+            let px = rgb.get_pixel(x, y).0;
+            total += 1;
+            if is_garbage_green(px) {
+                green += 1;
+                for c in 0..3 {
+                    row_min[sampled_rows][c] = row_min[sampled_rows][c].min(px[c]);
+                    row_max[sampled_rows][c] = row_max[sampled_rows][c].max(px[c]);
+                }
+            }
+            x += step_x;
+        }
+        green_frac[sampled_rows] = if total > 0 {
+            green as f64 / total as f64
+        } else {
+            0.0
+        };
+        sampled_rows += 1;
+        y += step_y;
+    }
+    if sampled_rows == 0 {
+        return false;
+    }
+
+    // Contiguous run of ≥90%-green rows anchored at the bottom, accumulating
+    // the color spread over only those band rows.
+    let mut band = 0usize;
+    let (mut gmin, mut gmax) = ([255u8; 3], [0u8; 3]);
+    for r in (0..sampled_rows).rev() {
+        if green_frac[r] < 0.9 {
+            break;
+        }
+        band += 1;
+        for c in 0..3 {
+            gmin[c] = gmin[c].min(row_min[r][c]);
+            gmax[c] = gmax[c].max(row_max[r][c]);
+        }
+    }
+
+    let band_fraction = band as f64 / sampled_rows as f64;
+    let spread = (0..3)
+        .map(|c| gmax[c].saturating_sub(gmin[c]))
+        .max()
+        .unwrap_or(255);
+
+    band >= 3 && band_fraction >= 0.20 && spread <= 24
 }
 
 #[cfg(test)]
@@ -3006,6 +3121,147 @@ mod tests {
     fn test_empty_image_detected() {
         let img = image::DynamicImage::ImageRgb8(image::RgbImage::new(0, 0));
         assert!(is_frame_mostly_black(&img));
+    }
+
+    // ---- decode-garbage (green band) corruption detection ----
+
+    /// Solid `content` everywhere, then solid `band` for every row at or below
+    /// `band_top_y`. Mirrors how a truncated decode looks: good content on top,
+    /// flat fill at the bottom.
+    fn frame_with_bottom_band(
+        w: u32,
+        h: u32,
+        band_top_y: u32,
+        content: [u8; 3],
+        band: [u8; 3],
+    ) -> image::DynamicImage {
+        let mut buf = image::RgbImage::new(w, h);
+        for y in 0..h {
+            let color = if y >= band_top_y { band } else { content };
+            for x in 0..w {
+                buf.put_pixel(x, y, image::Rgb(color));
+            }
+        }
+        image::DynamicImage::ImageRgb8(buf)
+    }
+
+    fn solid(w: u32, h: u32, color: [u8; 3]) -> image::DynamicImage {
+        let mut buf = image::RgbImage::new(w, h);
+        for px in buf.pixels_mut() {
+            *px = image::Rgb(color);
+        }
+        image::DynamicImage::ImageRgb8(buf)
+    }
+
+    #[test]
+    fn test_garbage_green_predicate() {
+        // Zeroed-chroma greens across the brightness range all match.
+        assert!(is_garbage_green([0, 135, 0]));
+        assert!(is_garbage_green([0, 255, 0]));
+        assert!(is_garbage_green([30, 150, 30]));
+        // Non-green / balanced colors do not.
+        assert!(!is_garbage_green([0, 0, 0])); // black
+        assert!(!is_garbage_green([200, 200, 200])); // gray
+        assert!(!is_garbage_green([0, 50, 0])); // too dark to be the fill
+        assert!(!is_garbage_green([120, 130, 140])); // typical content
+        assert!(!is_garbage_green([100, 150, 100])); // red too high
+    }
+
+    #[test]
+    fn test_full_frame_green_is_corrupt() {
+        let img = solid(1920, 1080, [0, 160, 0]);
+        assert!(has_decode_garbage_band(&img));
+        assert!(is_frame_corrupt(&img));
+        // A solid green frame is not "mostly black".
+        assert!(!is_frame_mostly_black(&img));
+    }
+
+    #[test]
+    fn test_bottom_green_band_over_content_is_corrupt() {
+        // The reported case: top ~60% normal content, bottom ~40% solid green.
+        let img = frame_with_bottom_band(1920, 1080, 648, [120, 130, 140], [0, 150, 0]);
+        assert!(has_decode_garbage_band(&img));
+        assert!(is_frame_corrupt(&img));
+    }
+
+    #[test]
+    fn test_bottom_green_band_quarter_height_is_corrupt() {
+        // ~25% bottom band still trips the ≥20% / ≥3-row threshold.
+        let img = frame_with_bottom_band(1600, 1000, 750, [90, 100, 110], [10, 170, 10]);
+        assert!(has_decode_garbage_band(&img));
+    }
+
+    #[test]
+    fn test_black_frame_is_corrupt_via_wrapper() {
+        let img = solid(1920, 1080, [0, 0, 0]);
+        assert!(is_frame_corrupt(&img));
+        assert!(!has_decode_garbage_band(&img)); // black isn't the green path
+    }
+
+    #[test]
+    fn test_normal_content_not_corrupt() {
+        let img = solid(1920, 1080, [120, 130, 140]);
+        assert!(!has_decode_garbage_band(&img));
+        assert!(!is_frame_corrupt(&img));
+    }
+
+    #[test]
+    fn test_dark_mode_not_corrupt() {
+        let img = solid(1920, 1080, [30, 30, 30]);
+        assert!(!is_frame_corrupt(&img));
+    }
+
+    #[test]
+    fn test_thin_green_dock_not_corrupt() {
+        // A ~7% bottom dock/taskbar in green is real content, not a fill —
+        // band too small to trip the threshold.
+        let img = frame_with_bottom_band(1920, 1080, 1004, [120, 130, 140], [0, 150, 0]);
+        assert!(!has_decode_garbage_band(&img));
+    }
+
+    #[test]
+    fn test_top_green_banner_not_corrupt() {
+        // Green only at the TOP (a success banner). The band is anchored to the
+        // bottom, so a top-only green region must not trip detection.
+        let mut buf = image::RgbImage::new(1920, 1080);
+        for y in 0..1080 {
+            let color = if y < 324 { [0, 150, 0] } else { [120, 130, 140] };
+            for x in 0..1920 {
+                buf.put_pixel(x, y, image::Rgb(color));
+            }
+        }
+        let img = image::DynamicImage::ImageRgb8(buf);
+        assert!(!has_decode_garbage_band(&img));
+    }
+
+    #[test]
+    fn test_textured_green_bottom_not_corrupt() {
+        // Bottom half is green but with real per-pixel variation (foliage /
+        // green-screen with lighting). High green fraction but large color
+        // spread → NOT a flat decode fill.
+        let mut buf = image::RgbImage::new(1920, 1080);
+        for y in 0..1080 {
+            for x in 0..1920 {
+                let color = if y >= 540 {
+                    // green-dominant but varied brightness (spread far > 24)
+                    let g = 90u8.saturating_add(((x + y) % 150) as u8);
+                    [10, g, 10]
+                } else {
+                    [120, 130, 140]
+                };
+                buf.put_pixel(x, y, image::Rgb(color));
+            }
+        }
+        let img = image::DynamicImage::ImageRgb8(buf);
+        assert!(!has_decode_garbage_band(&img));
+    }
+
+    #[test]
+    fn test_tiny_frame_not_green_corrupt() {
+        // Frames shorter than the band heuristic's floor never trip the green
+        // path (the black check still covers them).
+        let img = solid(10, 4, [0, 150, 0]);
+        assert!(!has_decode_garbage_band(&img));
     }
 
     #[test]
