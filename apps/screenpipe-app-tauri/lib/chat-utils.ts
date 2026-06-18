@@ -603,24 +603,48 @@ export function buildAppMentionSuggestions(
 
 export function buildTagMentionSuggestions(
   items: AppAutocompleteItem[],
-  limit: number
+  limit: number,
+  options: { includeMemoryCounts?: boolean } = {}
 ): MentionSuggestion[] {
   return items.slice(0, limit).map((item) => ({
     tag: `#${item.name}`,
-    description: formatTagAutocompleteDescription(item),
+    description: formatTagAutocompleteDescription(item, options),
     category: "tag" as const,
   }));
+}
+
+export function hasCaptureTagEvidence(item: {
+  frame_count?: number;
+  audio_count?: number;
+}) {
+  return (item.frame_count ?? 0) > 0 || (item.audio_count ?? 0) > 0;
+}
+
+export function buildCaptureTagMentionSuggestions(
+  items: AppAutocompleteItem[],
+  limit: number
+): MentionSuggestion[] {
+  return buildTagMentionSuggestions(
+    items.filter(hasCaptureTagEvidence),
+    limit,
+    { includeMemoryCounts: false }
+  );
 }
 
 function pluralize(count: number, singular: string, plural = `${singular}s`) {
   return `${count} ${count === 1 ? singular : plural}`;
 }
 
-function formatTagAutocompleteDescription(item: AppAutocompleteItem) {
+function formatTagAutocompleteDescription(
+  item: AppAutocompleteItem,
+  options: { includeMemoryCounts?: boolean } = {}
+) {
   const parts = [
     item.frame_count ? pluralize(item.frame_count, "frame") : null,
     item.audio_count ? pluralize(item.audio_count, "audio clip") : null,
-    item.memory_count ? pluralize(item.memory_count, "memory", "memories") : null,
+    options.includeMemoryCounts !== false && item.memory_count
+      ? pluralize(item.memory_count, "memory", "memories")
+      : null,
   ].filter((part): part is string => Boolean(part));
 
   if (parts.length > 0) return parts.join(", ");

@@ -78,7 +78,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import {
   parseMentions,
   buildAppMentionSuggestions,
-  buildTagMentionSuggestions,
+  buildCaptureTagMentionSuggestions,
+  hasCaptureTagEvidence,
   normalizeAppTag,
   formatShortcutDisplay,
   extractConversationHistorySyncUserText,
@@ -4330,25 +4331,32 @@ export function StandaloneChat({
     [appItems]
   );
 
-  const tagMentionSuggestions = React.useMemo(
-    () => buildTagMentionSuggestions(tagItems, TAG_SUGGESTION_LIMIT),
+  // Memory-only tags belong in Brain; chat filters should suggest labels that
+  // can scope captured screen/audio results.
+  const chatTagItems = React.useMemo(
+    () => tagItems.filter(hasCaptureTagEvidence),
     [tagItems]
+  );
+
+  const tagMentionSuggestions = React.useMemo(
+    () => buildCaptureTagMentionSuggestions(chatTagItems, TAG_SUGGESTION_LIMIT),
+    [chatTagItems]
   );
 
   const allTagMentionSuggestions = React.useMemo(
-    () => buildTagMentionSuggestions(tagItems, tagItems.length),
-    [tagItems]
+    () => buildCaptureTagMentionSuggestions(chatTagItems, chatTagItems.length),
+    [chatTagItems]
   );
 
   const tagMentionSections = React.useMemo(() => {
-    type TagCountKey = "memory_count" | "audio_count" | "frame_count";
+    type TagCountKey = "audio_count" | "frame_count";
     const used = new Set<string>();
 
-    const sourceCount = (item: (typeof tagItems)[number], key: TagCountKey) =>
+    const sourceCount = (item: (typeof chatTagItems)[number], key: TagCountKey) =>
       item[key] ?? 0;
 
     const pick = (key: TagCountKey) => {
-      const picked = tagItems
+      const picked = chatTagItems
         .filter((item) => sourceCount(item, key) > 0 && !used.has(item.name))
         .sort((a, b) => {
           const sourceDelta = sourceCount(b, key) - sourceCount(a, key);
@@ -4360,15 +4368,14 @@ export function StandaloneChat({
         .slice(0, TAG_SUGGESTION_LIMIT);
 
       for (const item of picked) used.add(item.name);
-      return buildTagMentionSuggestions(picked, TAG_SUGGESTION_LIMIT);
+      return buildCaptureTagMentionSuggestions(picked, TAG_SUGGESTION_LIMIT);
     };
 
     return [
-      { label: "memory tags", suggestions: pick("memory_count") },
-      { label: "audio tags", suggestions: pick("audio_count") },
       { label: "screen tags", suggestions: pick("frame_count") },
+      { label: "audio tags", suggestions: pick("audio_count") },
     ].filter((section) => section.suggestions.length > 0);
-  }, [tagItems]);
+  }, [chatTagItems]);
 
   const appTagMap = React.useMemo(() => {
     const map: Record<string, string> = {};
@@ -4582,7 +4589,7 @@ export function StandaloneChat({
         if (response.ok) {
           const tags = await response.json();
           if (Array.isArray(tags)) {
-            setTagSearchSuggestions(buildTagMentionSuggestions(tags, TAG_AUTOCOMPLETE_LIMIT));
+            setTagSearchSuggestions(buildCaptureTagMentionSuggestions(tags, TAG_AUTOCOMPLETE_LIMIT));
           }
         }
       } catch (error) {
@@ -4619,7 +4626,7 @@ export function StandaloneChat({
           const tags = await tagResponse.json();
           setFilterTagResults(
             Array.isArray(tags)
-              ? buildTagMentionSuggestions(tags, TAG_AUTOCOMPLETE_LIMIT)
+              ? buildCaptureTagMentionSuggestions(tags, TAG_AUTOCOMPLETE_LIMIT)
               : []
           );
         } else {
@@ -8535,46 +8542,50 @@ export function StandaloneChat({
           })
         )}
 
-        <div className="px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground bg-muted/30 border-b border-border/50 border-t">
-          tags
-        </div>
-        {allTagMentionSuggestions.length === 0 ? (
-          <div className="px-3 py-2 text-[10px] text-muted-foreground">
-            {tagsLoading ? "loading tags..." : "no tags yet"}
-          </div>
-        ) : (
-          tagMentionSections.map((section) => (
-            <React.Fragment key={section.label}>
-              <div className="px-3 py-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/80 bg-muted/20 border-b border-border/40">
-                {section.label}
+        {(tagsLoading || allTagMentionSuggestions.length > 0) && (
+          <>
+            <div className="px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground bg-muted/30 border-b border-border/50 border-t">
+              tags
+            </div>
+            {tagsLoading && allTagMentionSuggestions.length === 0 ? (
+              <div className="px-3 py-2 text-[10px] text-muted-foreground">
+                loading tags...
               </div>
-              {section.suggestions.map((suggestion) => {
-                const tagName = suggestion.tag.slice(1);
-                const isActive = activeFilters.tagNames.includes(tagName);
-                return (
-                  <button
-                    key={`tag-${section.label}-${suggestion.tag}`}
-                    type="button"
-                    onClick={() => {
-                      if (isActive) {
-                        removeFilter("tag", tagName);
-                      } else {
-                        setInput((prev) => `${suggestion.tag} ${prev.trim()}`.trim() + " ");
-                      }
-                      setAppFilterOpen(false);
-                    }}
-                    className={cn(
-                      "w-full px-3 py-1.5 text-left text-xs font-mono hover:bg-muted/50 transition-colors flex items-center justify-between gap-2",
-                      isActive && "bg-muted"
-                    )}
-                  >
-                    <span>{suggestion.tag}</span>
-                    <span className="text-[10px] text-muted-foreground truncate">{suggestion.description}</span>
-                  </button>
-                );
-              })}
-            </React.Fragment>
-          ))
+            ) : (
+              tagMentionSections.map((section) => (
+                <React.Fragment key={section.label}>
+                  <div className="px-3 py-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/80 bg-muted/20 border-b border-border/40">
+                    {section.label}
+                  </div>
+                  {section.suggestions.map((suggestion) => {
+                    const tagName = suggestion.tag.slice(1);
+                    const isActive = activeFilters.tagNames.includes(tagName);
+                    return (
+                      <button
+                        key={`tag-${section.label}-${suggestion.tag}`}
+                        type="button"
+                        onClick={() => {
+                          if (isActive) {
+                            removeFilter("tag", tagName);
+                          } else {
+                            setInput((prev) => `${suggestion.tag} ${prev.trim()}`.trim() + " ");
+                          }
+                          setAppFilterOpen(false);
+                        }}
+                        className={cn(
+                          "w-full px-3 py-1.5 text-left text-xs font-mono hover:bg-muted/50 transition-colors flex items-center justify-between gap-2",
+                          isActive && "bg-muted"
+                        )}
+                      >
+                        <span>{suggestion.tag}</span>
+                        <span className="text-[10px] text-muted-foreground truncate">{suggestion.description}</span>
+                      </button>
+                    );
+                  })}
+                </React.Fragment>
+              ))
+            )}
+          </>
         )}
 
         {connections.length > 0 && (
