@@ -175,14 +175,11 @@ export function TimelineControls({
 								) : (
 									<CalendarIcon className="h-3 w-3" />
 								)}
-								{/* Show the cursor time alongside the date so the pill
-								    reads e.g. "Jan 6 16:18". Falls back to the day
-								    (with year) until a frame is under the playhead. */}
-								<span>
-									{currentTime
-										? format(currentTime, "MMM d HH:mm")
-										: format(currentDate, "MMM d yyyy")}
-								</span>
+								{/* Always show the date + cursor time, e.g. "Jan 6 16:18".
+								    Prefer the timestamp of the frame under the playhead;
+								    fall back to currentDate during the brief load window
+								    before the first frame arrives. */}
+								<span>{format(currentTime ?? currentDate, "MMM d HH:mm")}</span>
 								<ChevronDown className="h-3 w-3 opacity-60" />
 							</button>
 						</PopoverTrigger>
