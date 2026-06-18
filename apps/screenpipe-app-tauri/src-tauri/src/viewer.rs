@@ -51,25 +51,31 @@ fn expand_tilde(path: &str) -> PathBuf {
 /// Falls back to the expanded path when nothing matches, so the eventual error
 /// message points at a concrete location instead of the bare relative string.
 pub fn resolve_local_path(path: &str) -> PathBuf {
-    resolve_local_path_in(
-        path,
-        &screenpipe_core::paths::default_screenpipe_data_dir(),
-        dirs::home_dir().as_deref(),
-    )
+    resolve_local_path_in(path, &screenpipe_core::paths::default_screenpipe_data_dir())
 }
 
-/// Inner resolver with the data dir + home injected, so it's pure and unit
-/// testable. See [`resolve_local_path`] for the rationale.
-fn resolve_local_path_in(path: &str, data_dir: &Path, home: Option<&Path>) -> PathBuf {
+/// Inner resolver with the data dir injected, so it's pure and unit testable.
+/// See [`resolve_local_path`] for the rationale.
+fn resolve_local_path_in(path: &str, data_dir: &Path) -> PathBuf {
     let expanded = expand_tilde(path);
 
-    // Absolute paths (post-tilde) and anything already reachable from the
-    // current working directory are taken at face value.
+    // Absolute paths (incl. post-`~`) and anything already reachable from the
+    // current working directory are read as-is. This is the old behavior, so
+    // the common absolute-path case adds ZERO new filesystem probing — and we
+    // never widen access to a user folder the citation didn't already name.
     if expanded.is_absolute() || expanded.exists() {
         return expanded;
     }
 
-    let norm = path.strip_prefix("./").unwrap_or(path);
+    // Normalize separators so a Windows-style `.pi\skills\…` is recognized too.
+    let norm = path.replace('\\', "/");
+    let norm = norm.strip_prefix("./").unwrap_or(norm.as_str());
+
+    // Resolve relative agent paths ONLY against screenpipe-owned, app-created
+    // directories under the data dir. We deliberately never probe arbitrary
+    // user folders (`~/Documents`, `~/Desktop`, …): that would be a wrong guess
+    // and, on macOS, a needless TCC access that could surface a permission
+    // prompt for a path the user never pointed us at.
     let mut candidates: Vec<PathBuf> = Vec::new();
 
     // `.pi/skills/<name>/…` → canonical store `<data_dir>/skills/<name>/…`.
@@ -77,15 +83,11 @@ fn resolve_local_path_in(path: &str, data_dir: &Path, home: Option<&Path>) -> Pa
         candidates.push(data_dir.join("skills").join(rest));
     }
 
-    // Base dirs the agent commonly runs in: the chat session dir, the data
-    // dir itself, and the user's home.
+    // The chat session dir and the data dir itself (agent artifacts land here).
     candidates.push(data_dir.join("pi-chat").join(&expanded));
     candidates.push(data_dir.join(&expanded));
-    if let Some(home) = home {
-        candidates.push(home.join(&expanded));
-    }
 
-    // Pipe project dirs each mirror `.pi/…`; only worth probing for
+    // Every pipe project dir mirrors `.pi/…`; only worth probing for
     // `.pi/`-relative paths and bounded by the number of installed pipes.
     if norm.starts_with(".pi/") {
         if let Ok(entries) = std::fs::read_dir(data_dir.join("pipes")) {
@@ -452,7 +454,7 @@ mod tests {
     #[test]
     fn resolve_absolute_is_unchanged() {
         let data = unique_tmp_dir("abs");
-        let got = resolve_local_path_in("/nope/missing.md", &data, None);
+        let got = resolve_local_path_in("/nope/missing.md", &data);
         assert_eq!(got, PathBuf::from("/nope/missing.md"));
         std::fs::remove_dir_all(&data).ok();
     }
@@ -466,11 +468,11 @@ mod tests {
         let file = skill.join("SKILL.md");
         std::fs::write(&file, b"# skill").unwrap();
 
-        let got = resolve_local_path_in(".pi/skills/screenpipe-api/SKILL.md", &data, None);
+        let got = resolve_local_path_in(".pi/skills/screenpipe-api/SKILL.md", &data);
         assert_eq!(got, file);
 
         // Same with a leading `./`.
-        let got2 = resolve_local_path_in("./.pi/skills/screenpipe-api/SKILL.md", &data, None);
+        let got2 = resolve_local_path_in("./.pi/skills/screenpipe-api/SKILL.md", &data);
         assert_eq!(got2, file);
 
         std::fs::remove_dir_all(&data).ok();
@@ -485,7 +487,7 @@ mod tests {
         let file = ext.join("web-search.ts");
         std::fs::write(&file, b"// ext").unwrap();
 
-        let got = resolve_local_path_in(".pi/extensions/web-search.ts", &data, None);
+        let got = resolve_local_path_in(".pi/extensions/web-search.ts", &data);
         assert_eq!(got, file);
         std::fs::remove_dir_all(&data).ok();
     }
@@ -495,8 +497,35 @@ mod tests {
         // Nothing exists anywhere → return the expanded (still-relative) path so
         // the error message is about a concrete-looking location, not a panic.
         let data = unique_tmp_dir("missing");
-        let got = resolve_local_path_in(".pi/skills/ghost/SKILL.md", &data, None);
+        let got = resolve_local_path_in(".pi/skills/ghost/SKILL.md", &data);
         assert_eq!(got, PathBuf::from(".pi/skills/ghost/SKILL.md"));
+        std::fs::remove_dir_all(&data).ok();
+    }
+
+    #[test]
+    fn resolve_never_probes_user_folders() {
+        // A bare relative path that looks like a user-content location must NOT
+        // be resolved to a real file outside the data dir — even if such a file
+        // exists in $HOME. Guards against widening macOS TCC access / opening a
+        // file the citation never actually pointed at.
+        let data = unique_tmp_dir("tcc");
+        let got = resolve_local_path_in("Documents/secret.md", &data);
+        assert_eq!(got, PathBuf::from("Documents/secret.md"));
+        assert!(!got.is_absolute());
+        std::fs::remove_dir_all(&data).ok();
+    }
+
+    #[test]
+    fn resolve_normalizes_windows_separators() {
+        // A Windows-style `.pi\skills\…` citation still remaps to the store.
+        let data = unique_tmp_dir("winsep");
+        let skill = data.join("skills").join("screenpipe-api");
+        std::fs::create_dir_all(&skill).unwrap();
+        let file = skill.join("SKILL.md");
+        std::fs::write(&file, b"# skill").unwrap();
+
+        let got = resolve_local_path_in(".pi\\skills\\screenpipe-api\\SKILL.md", &data);
+        assert_eq!(got, file);
         std::fs::remove_dir_all(&data).ok();
     }
 
