@@ -474,9 +474,12 @@ export const TimelineSlider = ({
 	}, [zoomLevel]);
 
 	const frameMargin = useMemo(() => {
-		const baseMargin = 2; // mx-0.5 = 0.125rem = 2px
-		return Math.max(1, Math.round(baseMargin * zoomLevel));
-	}, [zoomLevel]);
+		// Ribbon look (Rewind-style): frames sit flush with no gaps so consecutive
+		// same-app frames read as one continuous segment, and a color change is the
+		// only boundary between apps. Kept as a constant (not zoom-scaled) and used
+		// by all downstream width/scroll/memory math so geometry stays consistent.
+		return 0;
+	}, []);
 
 
 	// Pre-compute frame index map for O(1) lookups instead of O(n) indexOf.
@@ -1715,8 +1718,7 @@ export const TimelineSlider = ({
 											data-current={isCurrent ? "true" : undefined}
 											data-selected={isSelected || isInRange ? "true" : undefined}
 											className={cn(
-												"flex-shrink-0 cursor-ew-resize rounded-t relative hover:z-50 transition-all duration-200",
-												(isSelected || isInRange) && "ring-2 ring-foreground/60 ring-offset-1 ring-offset-black/20",
+												"flex-shrink-0 cursor-ew-resize relative hover:z-50 transition-all duration-200",
 												isCurrent && isPlaying && "animate-pulse"
 											)}
 											style={{
@@ -1724,22 +1726,29 @@ export const TimelineSlider = ({
 												marginLeft: `${frameMargin}px`,
 												marginRight: `${frameMargin}px`,
 												backgroundColor: appNameToBarColor(group.appName),
-												height: isCurrent || isSelected || isInRange ? "80%" : hasAudio ? "60%" : "45%",
-												opacity: !matchesFilter ? 0.15 : isCurrent || isSelected || isInRange ? 1 : hasAudio ? 0.9 : 0.7,
+												// Uniform height + flat sides => the row reads as one continuous bar
+												// rather than an equalizer of teeth. Emphasis (current/selection/audio)
+												// is layered on top so the ribbon's top edge stays flat.
+												height: "55%",
+												opacity: !matchesFilter ? 0.15 : isCurrent ? 1 : (isSelected || isInRange) ? 0.95 : 0.82,
 												direction: "ltr",
 												boxShadow: isCurrent
 												? isPlaying
 													? '0 0 6px rgba(255, 255, 255, 0.7), 0 0 14px rgba(255, 255, 255, 0.3)'
 													: '0 0 4px rgba(255, 255, 255, 0.6), 0 0 10px rgba(255, 255, 255, 0.25)'
-												: 'inset 0 0 0 0.5px rgba(255, 255, 255, 0.1)',
-												transform: isCurrent ? 'scale(1.15)' : 'scale(1)',
+												: (isSelected || isInRange)
+													? 'inset 0 2px 0 0 rgba(255, 255, 255, 0.9)'
+													: 'none',
+												// Vertical-only bump keeps the current frame from overlapping its
+												// now-flush neighbours; it rises out of the ribbon as the playhead.
+												transform: isCurrent ? 'scaleY(1.4)' : 'none',
+												transformOrigin: 'bottom',
 												transition: 'all 0.2s ease-out',
-												borderRadius: '4px 4px 0 0',
+												borderRadius: 0,
 											}}
 											whileHover={{
-												height: "75%",
+												height: "78%",
 												opacity: 1,
-												scale: 1.05,
 												transition: { duration: 0.15 }
 											}}
 											whileTap={{
@@ -1760,6 +1769,14 @@ export const TimelineSlider = ({
 												setHoveredRect(null);
 											}}
 										>
+											{/* Audio present — thin baseline accent (audio is no longer encoded via bar height) */}
+											{hasAudio && (
+												<div
+													className="absolute bottom-0 left-0 right-0 pointer-events-none"
+													style={{ height: '2px', background: 'rgba(255, 255, 255, 0.5)' }}
+												/>
+											)}
+
 											{/* Tag indicator dot */}
 											{hasTags && (
 												<div
