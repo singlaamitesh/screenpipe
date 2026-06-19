@@ -273,11 +273,9 @@ function appNameToBarColor(name: string): string {
 const PlayheadTimeChip = React.memo(function PlayheadTimeChip({
 	containerRef,
 	timestamp,
-	hidden,
 }: {
 	containerRef: React.RefObject<HTMLDivElement | null>;
 	timestamp: string | undefined;
-	hidden: boolean;
 }) {
 	const [rect, setRect] = useState<{ x: number; y: number } | null>(null);
 
@@ -312,7 +310,7 @@ const PlayheadTimeChip = React.memo(function PlayheadTimeChip({
 		};
 	}, [containerRef, timestamp]);
 
-	if (hidden || !rect || !timestamp) return null;
+	if (!rect || !timestamp) return null;
 
 	return createPortal(
 		<div
@@ -1771,10 +1769,11 @@ export const TimelineSlider = ({
 										? timeMarkers.find(m => m.position === visibleFrames.indexOf(frame))
 										: null;
 
-									// Only show the rich thumbnail preview while actively hovering a bar.
-									// The current/playhead position no longer shows a thumbnail when
-									// idle — it shows the always-visible time chip instead (PlayheadTimeChip).
-									const shouldShowTooltip = hoveredTimestamp === frame.timestamp;
+									// Rich thumbnail preview shows only when hovering OTHER bars.
+									// The playhead bar never shows a thumbnail — it always shows the
+									// live time chip above it instead (PlayheadTimeChip), so hovering
+									// the playhead doesn't disturb the always-on current-time label.
+									const shouldShowTooltip = hoveredTimestamp === frame.timestamp && !isCurrent;
 
 									const frameId = frame.devices?.[0]?.frame_id || '';
 									const frameTags = frameId ? (tags[frameId] || []) : [];
@@ -2005,12 +2004,12 @@ export const TimelineSlider = ({
 			)}
 
 			{/* Playhead time chip — always pinned above the current (big) bar so the
-			    current time position is visible at a glance. Isolated component so the
-			    scroll-driven re-measuring doesn't re-render the whole timeline. */}
+			    current time position is visible at a glance, regardless of hover.
+			    Isolated component so the scroll-driven re-measuring doesn't re-render
+			    the whole timeline. */}
 			<PlayheadTimeChip
 				containerRef={containerRef}
 				timestamp={frames[currentIndex]?.timestamp}
-				hidden={hoveredTimestamp === frames[currentIndex]?.timestamp}
 			/>
 		</div>
 	);
