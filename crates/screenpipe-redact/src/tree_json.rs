@@ -132,7 +132,12 @@ pub fn redact_tree_json_with_fields(
 /// child nodes (and any future nesting) are covered, but the field-name
 /// allowlist means structural strings (role, ids, class names) are never
 /// touched.
-fn redact_value(value: &mut Value, allowed_fields: &[&str], map: &RedactionMap, changed: &mut bool) {
+fn redact_value(
+    value: &mut Value,
+    allowed_fields: &[&str],
+    map: &RedactionMap,
+    changed: &mut bool,
+) {
     redact_value_with(value, allowed_fields, changed, &mut |s| {
         let redacted = map.apply(s);
         if redacted == *s {

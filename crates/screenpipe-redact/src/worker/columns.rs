@@ -155,11 +155,7 @@ impl RedactColumns {
     /// out-of-box set to the user (copy-paste to customize).
     pub fn default_keys() -> Vec<&'static str> {
         let d = Self::default();
-        keys::ALL
-            .iter()
-            .copied()
-            .filter(|k| d.has_key(k))
-            .collect()
+        keys::ALL.iter().copied().filter(|k| d.has_key(k)).collect()
     }
 
     /// Whether this set has the given key enabled (mirror of `from_keys`).

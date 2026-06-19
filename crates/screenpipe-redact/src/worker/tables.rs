@@ -501,7 +501,10 @@ pub async fn write_redacted_element(
         set_clauses.push("properties = ?");
     }
     set_clauses.push("redacted_at = strftime('%s', 'now')");
-    let q = format!("UPDATE elements SET {} WHERE id = ?", set_clauses.join(", "));
+    let q = format!(
+        "UPDATE elements SET {} WHERE id = ?",
+        set_clauses.join(", ")
+    );
     let mut query = sqlx::query(&q);
     if let Some(t) = text {
         query = query.bind(t);
@@ -855,7 +858,10 @@ mod tests {
             "a row with PII only in element_name/element_description must now \
              be fetched (those columns are in scope)"
         );
-        assert!(rows.iter().all(|r| r.id != 4), "the empty move must be skipped");
+        assert!(
+            rows.iter().all(|r| r.id != 4),
+            "the empty move must be skipped"
+        );
 
         let click = rows.iter().find(|r| r.id == 1).unwrap();
         assert_eq!(
@@ -1203,12 +1209,10 @@ mod tests {
             .await
             .unwrap();
         // 5: already redacted → skipped.
-        sqlx::query(
-            "INSERT INTO elements (text, redacted_at) VALUES ('[EMAIL]', 1)",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
+        sqlx::query("INSERT INTO elements (text, redacted_at) VALUES ('[EMAIL]', 1)")
+            .execute(&pool)
+            .await
+            .unwrap();
 
         let rows = fetch_unredacted_elements(&pool, 10).await.unwrap();
         let ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
@@ -1234,9 +1238,16 @@ mod tests {
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(row.get::<String, _>(0), "a@b.co", "untouched text preserved");
+        assert_eq!(
+            row.get::<String, _>(0),
+            "a@b.co",
+            "untouched text preserved"
+        );
         assert_eq!(row.get::<String, _>(1), "{\"value\":\"[EMAIL]\"}");
-        assert!(row.get::<Option<i64>, _>(2).is_some(), "redacted_at stamped");
+        assert!(
+            row.get::<Option<i64>, _>(2).is_some(),
+            "redacted_at stamped"
+        );
     }
 
     /// A clean row (nothing to change) is still stamped so it's never

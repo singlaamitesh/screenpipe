@@ -264,13 +264,12 @@ async fn worker_redacts_all_targets() {
     assert!(when.is_some(), "ui_events.redacted_at must be stamped");
 
     // elements: the text element must be redacted in `text` + stamped.
-    let elem_text: String = sqlx::query(
-        "SELECT text FROM elements WHERE text IS NOT NULL AND redacted_at IS NOT NULL",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap()
-    .get(0);
+    let elem_text: String =
+        sqlx::query("SELECT text FROM elements WHERE text IS NOT NULL AND redacted_at IS NOT NULL")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .get(0);
     assert!(
         elem_text.contains("[EMAIL]") && !elem_text.contains("carol@example.com"),
         "elements.text not redacted: {elem_text:?}"
@@ -289,7 +288,10 @@ async fn worker_redacts_all_targets() {
         "elements.properties value not redacted: {props_row:?}"
     );
     // role_description ("text field") is non-PII → preserved.
-    assert!(props_row.contains("text field"), "structure lost: {props_row:?}");
+    assert!(
+        props_row.contains("text field"),
+        "structure lost: {props_row:?}"
+    );
 
     let status = worker.status().await;
     assert!(status.running);
@@ -674,12 +676,30 @@ async fn frame_fulltext_propagates_to_all_derived_copies_once() {
     let url_when: Option<i64> = row.get(5);
 
     // Secret gone from every derived copy; watermarks stamped.
-    assert!(!tree_red.contains(secret), "secret survived in tree: {tree_red:?}");
-    assert!(tree_red.contains("[SECRET]"), "tree not redacted: {tree_red:?}");
-    assert!(!win_red.contains(secret), "secret survived in window_name: {win_red:?}");
-    assert!(win_red.contains("[SECRET]"), "window_name not redacted: {win_red:?}");
-    assert!(!url_red.contains(secret), "secret survived in browser_url: {url_red:?}");
-    assert!(url_red.contains("[SECRET]"), "browser_url not redacted: {url_red:?}");
+    assert!(
+        !tree_red.contains(secret),
+        "secret survived in tree: {tree_red:?}"
+    );
+    assert!(
+        tree_red.contains("[SECRET]"),
+        "tree not redacted: {tree_red:?}"
+    );
+    assert!(
+        !win_red.contains(secret),
+        "secret survived in window_name: {win_red:?}"
+    );
+    assert!(
+        win_red.contains("[SECRET]"),
+        "window_name not redacted: {win_red:?}"
+    );
+    assert!(
+        !url_red.contains(secret),
+        "secret survived in browser_url: {url_red:?}"
+    );
+    assert!(
+        url_red.contains("[SECRET]"),
+        "browser_url not redacted: {url_red:?}"
+    );
     assert!(
         tree_when.is_some() && win_when.is_some() && url_when.is_some(),
         "all derived watermarks must be stamped"
@@ -1109,16 +1129,28 @@ async fn frame_fulltext_no_map_path_scrubs_all_derived_copies() {
     let url_red: String = row.get(6);
 
     // Every derived copy scrubbed on the enclave path.
-    assert!(!tree_red.contains(email), "email survived in tree: {tree_red:?}");
-    assert!(!win_red.contains(email), "email survived in window_name: {win_red:?}");
-    assert!(!url_red.contains(email), "email survived in browser_url: {url_red:?}");
+    assert!(
+        !tree_red.contains(email),
+        "email survived in tree: {tree_red:?}"
+    );
+    assert!(
+        !win_red.contains(email),
+        "email survived in window_name: {win_red:?}"
+    );
+    assert!(
+        !url_red.contains(email),
+        "email survived in browser_url: {url_red:?}"
+    );
     assert!(
         tree_red.contains("[EMAIL]") && win_red.contains("[EMAIL]") && url_red.contains("[EMAIL]")
     );
     // Watermarks stamped on the derived copies + full_text.
     assert!(row.get::<Option<i64>, _>(1).is_some());
     assert!(row.get::<Option<i64>, _>(3).is_some());
-    assert!(row.get::<Option<i64>, _>(7).is_some(), "browser_url watermark");
+    assert!(
+        row.get::<Option<i64>, _>(7).is_some(),
+        "browser_url watermark"
+    );
     assert!(
         full_red.contains("[EMAIL]") && full_when.is_some(),
         "full_text must be redacted + stamped after the derived copies"
@@ -1138,15 +1170,13 @@ async fn default_columns_leave_optin_columns_untouched() {
     let pool = setup_db().await;
     let email = "dana@example.com";
     // Frame: full_text (core, on) + window_name (core, on) + browser_url (opt-in, off).
-    sqlx::query(
-        "INSERT INTO frames (id, full_text, window_name, browser_url) VALUES (1, ?, ?, ?)",
-    )
-    .bind(format!("page for {email}"))
-    .bind(format!("Inbox — {email}"))
-    .bind(format!("https://mail.example.com/u/{email}"))
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::query("INSERT INTO frames (id, full_text, window_name, browser_url) VALUES (1, ?, ?, ?)")
+        .bind(format!("page for {email}"))
+        .bind(format!("Inbox — {email}"))
+        .bind(format!("https://mail.example.com/u/{email}"))
+        .execute(&pool)
+        .await
+        .unwrap();
     // ui_event: element_value (core, on) + element_name (opt-in, off).
     sqlx::query(
         "INSERT INTO ui_events (event_type, element_value, element_name) VALUES ('click', ?, ?)",
@@ -1181,23 +1211,36 @@ async fn default_columns_leave_optin_columns_untouched() {
     let win: String = frame.get(2);
     let url: String = frame.get(3);
     // Core ON: full_text + window_name redacted.
-    assert!(full.contains("[EMAIL]"), "full_text should be redacted: {full:?}");
-    assert!(win.contains("[EMAIL]"), "window_name should be redacted: {win:?}");
+    assert!(
+        full.contains("[EMAIL]"),
+        "full_text should be redacted: {full:?}"
+    );
+    assert!(
+        win.contains("[EMAIL]"),
+        "window_name should be redacted: {win:?}"
+    );
     // Opt-in OFF: browser_url untouched, and its watermark NOT stamped (we
     // skip it entirely, not stamp-without-change).
-    assert!(url.contains(email), "browser_url must be left raw by default: {url:?}");
+    assert!(
+        url.contains(email),
+        "browser_url must be left raw by default: {url:?}"
+    );
     assert!(
         frame.get::<Option<i64>, _>(4).is_none(),
         "browser_url watermark must stay NULL when the column is off"
     );
 
-    let ev = sqlx::query("SELECT element_value, element_name FROM ui_events WHERE event_type='click'")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let ev =
+        sqlx::query("SELECT element_value, element_name FROM ui_events WHERE event_type='click'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     let ev_val: String = ev.get(0);
     let ev_name: String = ev.get(1);
-    assert!(ev_val.contains("[EMAIL]"), "element_value should be redacted: {ev_val:?}");
+    assert!(
+        ev_val.contains("[EMAIL]"),
+        "element_value should be redacted: {ev_val:?}"
+    );
     assert!(
         ev_name.contains(email),
         "element_name must be left raw by default: {ev_name:?}"

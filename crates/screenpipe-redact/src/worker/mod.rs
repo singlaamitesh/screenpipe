@@ -409,7 +409,10 @@ impl Worker {
         if rows.is_empty() {
             return Ok(0);
         }
-        debug!(count = rows.len(), "redacting elements batch (text + properties)");
+        debug!(
+            count = rows.len(),
+            "redacting elements batch (text + properties)"
+        );
 
         // Per element: optional `text` (one slot) followed by its property
         // strings in `collect_redactable` document order. Flatten all into
