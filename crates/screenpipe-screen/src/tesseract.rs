@@ -6,7 +6,14 @@ use image::{DynamicImage, GenericImageView};
 use rusty_tesseract::{Args, DataOutput, Image};
 use screenpipe_core::{Language, TESSERACT_LANGUAGES};
 use std::collections::HashMap;
+use std::panic::AssertUnwindSafe;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::warn;
+
+/// Latched once tesseract is found to be unusable (binary missing or its
+/// command layer panics — see below). After that, OCR calls skip silently
+/// instead of re-invoking the panicking path on every frame.
+static TESSERACT_BROKEN: AtomicBool = AtomicBool::new(false);
 
 /// Ensure TESSDATA_PREFIX is set so tesseract can find language data files.
 fn ensure_tessdata_prefix() {
@@ -44,6 +51,12 @@ pub fn perform_ocr_tesseract(
     image: &DynamicImage,
     languages: Vec<Language>,
 ) -> (String, String, Option<f64>) {
+    // If a prior call proved tesseract unusable, don't re-invoke the path that
+    // panics — just skip OCR for this frame.
+    if TESSERACT_BROKEN.load(Ordering::Relaxed) {
+        return (String::new(), "[]".to_string(), None);
+    }
+
     ensure_tessdata_prefix();
 
     let language_string = match languages.is_empty() {
@@ -76,11 +89,28 @@ pub fn perform_ocr_tesseract(
         }
     };
 
-    // Extract data output
-    let data_output = match rusty_tesseract::image_to_data(&ocr_image, &args) {
-        Ok(data) => data,
-        Err(e) => {
+    // Extract data output. rusty-tesseract can *panic* (not just return Err)
+    // deep in its command layer — e.g. command.rs:108 unwraps the tesseract
+    // subprocess output, which is `None` when the `tesseract` binary is missing
+    // or misbehaving (common on Linux). That unwind would otherwise kill the
+    // capture worker. Catch it, degrade to "no OCR for this frame", and latch
+    // TESSERACT_BROKEN so we don't keep re-triggering it.
+    // See SCREENPIPE-CLI-V3 (rusty-tesseract command.rs:108) and CLI-T0.
+    let ocr_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        rusty_tesseract::image_to_data(&ocr_image, &args)
+    }));
+    let data_output = match ocr_result {
+        Ok(Ok(data)) => data,
+        Ok(Err(e)) => {
             warn!("tesseract: OCR failed: {}", e);
+            return (String::new(), "[]".to_string(), None);
+        }
+        Err(_) => {
+            TESSERACT_BROKEN.store(true, Ordering::Relaxed);
+            warn!(
+                "tesseract: OCR panicked (tesseract binary missing or misbehaving?) — \
+                 disabling tesseract OCR for this session"
+            );
             return (String::new(), "[]".to_string(), None);
         }
     };
@@ -145,5 +175,30 @@ fn calculate_overall_confidence(data_output: &DataOutput) -> f64 {
         (total_conf / count as f32) as f64
     } else {
         0.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `perform_ocr_tesseract` must NEVER unwind, regardless of whether the
+    /// `tesseract` binary is present/healthy on the host. Before the
+    /// catch_unwind guard, a missing/misbehaving tesseract panicked inside
+    /// rusty-tesseract (command.rs:108) and killed the capture worker
+    /// (SCREENPIPE-CLI-V3 / CLI-T0). On a runner without tesseract this directly
+    /// exercises the guard; with tesseract it confirms the happy path. Either
+    /// way: returns a well-formed tuple, no panic.
+    #[test]
+    fn perform_ocr_tesseract_is_panic_safe() {
+        let img = image::DynamicImage::new_rgb8(32, 16);
+        let (text, json, conf) = perform_ocr_tesseract(&img, vec![]);
+        assert!(
+            json == "[]" || json.starts_with('['),
+            "json output must be a list, got: {json}"
+        );
+        // text is always a (possibly empty) String; conf is None or finite.
+        assert!(conf.map(|c| c.is_finite()).unwrap_or(true));
+        let _ = text;
     }
 }
