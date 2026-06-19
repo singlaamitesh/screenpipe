@@ -82,6 +82,28 @@ mod tests {
         assert!(audio_to_mono(&[], 0).is_empty());
     }
 
+    /// High channel counts (pro interfaces, Dante/MADI virtual soundcards) must
+    /// downmix without panicking or overflowing the capacity calc.
+    #[test]
+    fn many_channels_are_averaged() {
+        // 32-channel frame of all-ones averages to 1.0.
+        let frame = vec![1.0f32; 32];
+        assert_eq!(audio_to_mono(&frame, 32), vec![1.0]);
+
+        // Two 64-channel frames.
+        let two = vec![0.5f32; 128];
+        assert_eq!(audio_to_mono(&two, 64), vec![0.5, 0.5]);
+    }
+
+    /// A frame shorter than the channel count (can happen on the trailing
+    /// partial chunk of a high-channel device) must not panic.
+    #[test]
+    fn frame_shorter_than_channel_count_is_safe() {
+        // 3 samples but device claims 8 channels → one partial frame.
+        let out = audio_to_mono(&[0.8, 0.8, 0.8], 8);
+        assert_eq!(out.len(), 1);
+    }
+
     /// A trailing partial frame (len not a multiple of `channels`) must not
     /// panic and should still emit a sample for the partial chunk, matching
     /// the historical averaging behaviour.

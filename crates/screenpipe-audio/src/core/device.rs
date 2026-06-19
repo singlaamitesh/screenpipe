@@ -368,28 +368,36 @@ pub async fn get_cpal_device_and_config(
         (*best_config).with_sample_rate(best_config.max_sample_rate())
     };
 
-    // Guard against drivers that advertise a usable config but report zero
-    // channels (seen with virtual cables and some non-default Windows capture
-    // endpoints). Building a stream from it feeds a 0-channel buffer into the
-    // realtime downmix, which used to crash the whole capture thread — and with
-    // it the app — see issue #3858. Reject it here with a clean error so the
+    // Guard against drivers that advertise a config with degenerate values —
+    // 0 channels or a 0 sample rate — seen with virtual cables and some
+    // non-default Windows capture endpoints. A 0-channel buffer crashes the
+    // realtime downmix; a 0 sample rate later crashes the resampler (infinite
+    // ratio). Both used to take down the capture thread and the app — see
+    // issue #3858. Reject the config here with a clean error so the
     // device-recovery loop logs and backs off instead of crashing.
-    ensure_usable_channel_count(config.channels(), &device_name)?;
+    ensure_usable_stream_config(config.channels(), config.sample_rate().0, &device_name)?;
 
     Ok((cpal_audio_device, config))
 }
 
 /// Reject obviously-unusable stream configs before we open a stream.
 ///
-/// Split out as a pure function so the zero-channel guard can be unit-tested
-/// without real audio hardware. A `0` channel count is the one value that
-/// makes the downstream interleaved→mono conversion panic, so we treat it as
-/// a hard error rather than letting it reach the realtime callback.
+/// Split out as a pure function so the degenerate-config guards can be
+/// unit-tested without real audio hardware. A `0` channel count makes the
+/// downstream interleaved→mono conversion panic, and a `0` sample rate makes
+/// the resampler build an infinite ratio (panic / broken state), so both are
+/// treated as hard errors rather than reaching the realtime path.
 #[cfg(not(all(target_os = "linux", feature = "pulseaudio")))]
-fn ensure_usable_channel_count(channels: u16, device_name: &str) -> Result<()> {
+fn ensure_usable_stream_config(channels: u16, sample_rate: u32, device_name: &str) -> Result<()> {
     if channels == 0 {
         return Err(anyhow!(
             "audio device '{}' reported 0 channels — refusing to build a stream",
+            device_name
+        ));
+    }
+    if sample_rate == 0 {
+        return Err(anyhow!(
+            "audio device '{}' reported a 0 sample rate — refusing to build a stream",
             device_name
         ));
     }
@@ -1051,15 +1059,15 @@ mod resolve_audio_tests {
 }
 
 #[cfg(all(test, not(all(target_os = "linux", feature = "pulseaudio"))))]
-mod channel_count_tests {
-    use super::ensure_usable_channel_count;
+mod stream_config_tests {
+    use super::ensure_usable_stream_config;
 
     /// Regression for issue #3858: a non-default / virtual device that reports
     /// 0 channels must be rejected with a clean error before we build a stream,
     /// rather than reaching the realtime downmix and panicking.
     #[test]
     fn zero_channels_is_rejected() {
-        let err = ensure_usable_channel_count(0, "Some Virtual Cable")
+        let err = ensure_usable_stream_config(0, 48_000, "Some Virtual Cable")
             .expect_err("0 channels must be an error");
         let msg = err.to_string();
         assert!(msg.contains("0 channels"), "error should explain why: {msg}");
@@ -1069,10 +1077,26 @@ mod channel_count_tests {
         );
     }
 
+    /// Regression for issue #3858: a 0 sample rate must be rejected too — it
+    /// later crashes the resampler with an infinite ratio.
     #[test]
-    fn mono_and_stereo_are_accepted() {
-        assert!(ensure_usable_channel_count(1, "Mic").is_ok());
-        assert!(ensure_usable_channel_count(2, "Mic").is_ok());
-        assert!(ensure_usable_channel_count(8, "Interface").is_ok());
+    fn zero_sample_rate_is_rejected() {
+        let err = ensure_usable_stream_config(2, 0, "Weird Device")
+            .expect_err("0 sample rate must be an error");
+        let msg = err.to_string();
+        assert!(msg.contains("0 sample rate"), "error should explain why: {msg}");
+        assert!(msg.contains("Weird Device"), "error should name the device: {msg}");
+    }
+
+    #[test]
+    fn valid_configs_are_accepted() {
+        // Mono, stereo, and high-channel pro interfaces at a range of common
+        // (and unusual-but-valid) sample rates.
+        assert!(ensure_usable_stream_config(1, 16_000, "Mic").is_ok());
+        assert!(ensure_usable_stream_config(2, 44_100, "Mic").is_ok());
+        assert!(ensure_usable_stream_config(8, 48_000, "Interface").is_ok());
+        assert!(ensure_usable_stream_config(32, 192_000, "Dante").is_ok());
+        assert!(ensure_usable_stream_config(64, 384_000, "MADI").is_ok());
+        assert!(ensure_usable_stream_config(1, 8_000, "Bluetooth HFP").is_ok());
     }
 }
