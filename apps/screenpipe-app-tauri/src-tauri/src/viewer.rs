@@ -22,7 +22,7 @@ const MAX_VIEWER_FILE_BYTES: u64 = 10 * 1024 * 1024;
 
 /// Expand a leading `~` / `~/` to the user's home directory. Leaves every
 /// other path untouched (including bare `~user`, which we don't resolve).
-fn expand_tilde(path: &str) -> PathBuf {
+pub(crate) fn expand_tilde(path: &str) -> PathBuf {
     if path == "~" {
         return dirs::home_dir().unwrap_or_else(|| PathBuf::from(path));
     }
