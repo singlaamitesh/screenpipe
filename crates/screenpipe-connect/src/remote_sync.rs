@@ -274,7 +274,8 @@ async fn load_private_key(key_path: &str) -> Result<Arc<russh::keys::PrivateKey>
     Ok(Arc::new(key))
 }
 
-async fn connect_sftp(config: &SyncConfig) -> Result<(client::Handle<SshHandler>, SftpSession)> {
+/// Open + authenticate an SSH session (shared by SFTP sync and remote exec).
+async fn ssh_session(config: &SyncConfig) -> Result<client::Handle<SshHandler>> {
     let key = load_private_key(&config.key_path).await?;
     let mut session = client::connect(
         Arc::new(client::Config::default()),
@@ -299,7 +300,11 @@ async fn connect_sftp(config: &SyncConfig) -> Result<(client::Handle<SshHandler>
             config.port
         );
     }
+    Ok(session)
+}
 
+async fn connect_sftp(config: &SyncConfig) -> Result<(client::Handle<SshHandler>, SftpSession)> {
+    let session = ssh_session(config).await?;
     let channel = session
         .channel_open_session()
         .await
@@ -313,6 +318,57 @@ async fn connect_sftp(config: &SyncConfig) -> Result<(client::Handle<SshHandler>
         .map_err(|e| anyhow::anyhow!("SFTP init failed: {}", e))?;
 
     Ok((session, sftp))
+}
+
+/// Result of a remote command run over SSH.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[cfg_attr(feature = "specta", specta(rename = "RemoteExecResult"))]
+pub struct ExecResult {
+    pub code: i32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+const EXEC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Run a command on the remote host over SSH and capture stdout/stderr/exit.
+/// Used to wire an agent (e.g. `screenpipe agent setup <target>`) on a VPS
+/// without the user touching a terminal — reuses the same SSH creds as sync.
+pub async fn exec_remote(config: &SyncConfig, command: &str) -> Result<ExecResult> {
+    tokio::time::timeout(EXEC_TIMEOUT, exec_remote_inner(config, command))
+        .await
+        .map_err(|_| anyhow::anyhow!("remote command timed out after {}s", EXEC_TIMEOUT.as_secs()))?
+}
+
+async fn exec_remote_inner(config: &SyncConfig, command: &str) -> Result<ExecResult> {
+    let session = ssh_session(config).await?;
+    let mut channel = session
+        .channel_open_session()
+        .await
+        .context("failed to open SSH channel")?;
+    channel
+        .exec(true, command)
+        .await
+        .context("failed to start remote command")?;
+
+    let mut stdout: Vec<u8> = Vec::new();
+    let mut stderr: Vec<u8> = Vec::new();
+    let mut code: i32 = -1;
+    while let Some(msg) = channel.wait().await {
+        match msg {
+            russh::ChannelMsg::Data { data } => stdout.extend_from_slice(&data),
+            russh::ChannelMsg::ExtendedData { data, .. } => stderr.extend_from_slice(&data),
+            russh::ChannelMsg::ExitStatus { exit_status } => code = exit_status as i32,
+            _ => {}
+        }
+    }
+
+    Ok(ExecResult {
+        code,
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+    })
 }
 
 // ── File transfer helpers ───────────────────────────────────────────────

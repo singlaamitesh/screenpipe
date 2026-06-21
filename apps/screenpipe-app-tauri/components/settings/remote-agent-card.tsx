@@ -121,7 +121,7 @@ const TARGETS: { id: TargetId; label: string; props: AgentCardProps }[] = [
     label: "Claude Code",
     props: {
       name: "Claude Code",
-      iconSrc: "/claude-ai.svg",
+      iconSrc: "/images/claude-ai.svg",
       description:
         "Anthropic's terminal/IDE agent. Give it screenpipe via MCP + skills, locally or on a remote box.",
       homepage: "https://claude.com/claude-code",
@@ -135,7 +135,7 @@ const TARGETS: { id: TargetId; label: string; props: AgentCardProps }[] = [
     label: "Claude Desktop",
     props: {
       name: "Claude Desktop",
-      iconSrc: "/claude-ai.svg",
+      iconSrc: "/images/claude-ai.svg",
       description: "The Claude desktop app. MCP-only — register screenpipe as an MCP server.",
       homepage: "https://claude.ai/download",
       mcp: {
@@ -152,7 +152,7 @@ const TARGETS: { id: TargetId; label: string; props: AgentCardProps }[] = [
     label: "Codex",
     props: {
       name: "Codex",
-      iconSrc: "/codex.svg",
+      iconSrc: "/images/codex.svg",
       description: "OpenAI's Codex CLI. MCP-only — registers screenpipe in ~/.codex/config.toml.",
       homepage: "https://developers.openai.com/codex",
       mcp: { format: "toml", configPath: "~/.codex/config.toml", snippet: TOML_SNIPPET },
@@ -165,6 +165,8 @@ const TARGETS: { id: TargetId; label: string; props: AgentCardProps }[] = [
 export function RemoteAgentCard() {
   const [targetId, setTargetId] = useState<TargetId>("openclaw");
   const [copied, setCopied] = useState(false);
+  const [run, setRun] = useState<"idle" | "running" | "done" | "error">("idle");
+  const [msg, setMsg] = useState("");
   const target = TARGETS.find((t) => t.id === targetId) ?? TARGETS[0];
 
   const hasSkills = target.props.skills.length > 0;
@@ -178,6 +180,56 @@ export function RemoteAgentCard() {
     } catch {}
   };
 
+  // One-click over SSH: reuse the host + key the user entered in the Sync
+  // (remote) tab (stored under "<target>-sync-config") and run `agent setup`
+  // on that box — no terminal.
+  const setupOverSsh = async () => {
+    let saved: {
+      host?: string;
+      port?: string;
+      user?: string;
+      keyPath?: string;
+      remotePath?: string;
+      intervalMinutes?: number;
+      enabled?: boolean;
+    } | null = null;
+    try {
+      const raw = localStorage?.getItem(`${target.id}-sync-config`);
+      if (raw) saved = JSON.parse(raw);
+    } catch {}
+    if (!saved?.host || !saved?.user || !saved?.keyPath) {
+      setRun("error");
+      setMsg("add your server's host + SSH key in the Sync (remote) tab below first.");
+      return;
+    }
+    setRun("running");
+    setMsg("");
+    try {
+      const cfg = {
+        host: saved.host,
+        port: parseInt(saved.port ?? "22") || 22,
+        user: saved.user,
+        key_path: saved.keyPath,
+        remote_path: saved.remotePath || "~/screenpipe-data",
+        interval_minutes: saved.intervalMinutes ?? 5,
+        enabled: !!saved.enabled,
+      };
+      const res = await commands.remoteSyncExecSetup(cfg, target.id);
+      if (res.status === "error") throw new Error(res.error);
+      const { code, stdout, stderr } = res.data;
+      if (code === 0) {
+        setRun("done");
+        setMsg(`✓ wired ${target.props.name} on ${saved.host}. restart it there.`);
+      } else {
+        setRun("error");
+        setMsg((stderr || stdout || `exited ${code}`).slice(0, 400));
+      }
+    } catch (e) {
+      setRun("error");
+      setMsg(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2 flex-wrap">
@@ -187,6 +239,8 @@ export function RemoteAgentCard() {
           onChange={(e) => {
             setTargetId(e.target.value as TargetId);
             setCopied(false);
+            setRun("idle");
+            setMsg("");
           }}
           className="h-8 rounded-md border border-border bg-background px-2 text-xs text-foreground"
         >
@@ -198,26 +252,35 @@ export function RemoteAgentCard() {
         </select>
       </div>
 
-      {/* Remote-first: one command on the box where the agent runs. */}
-      <div className="rounded-md border border-border bg-muted/40 p-3 space-y-2">
+      {/* Remote-first: one click over SSH, or the command to run yourself. */}
+      <div className="rounded-md border border-border bg-muted/40 p-3 space-y-3">
         <p className="text-xs text-muted-foreground leading-relaxed">
           <span className="text-foreground font-medium">Set it up where {target.props.name} runs</span>{" "}
-          — your VPS, a cloud box, a Mac mini, or this machine. Run this there; it
-          wires the screenpipe MCP{hasSkills ? " + skill" : ""} into {target.props.name}:
+          — your VPS, a cloud box, or a Mac mini. It wires the screenpipe MCP
+          {hasSkills ? " + skill" : ""} into {target.props.name}.
         </p>
-        <div className="flex items-center gap-2">
-          <code className="flex-1 text-xs font-mono bg-background border border-border rounded px-2 py-1.5 overflow-x-auto whitespace-nowrap">
-            {setupCmd}
-          </code>
-          <Button size="sm" variant="outline" className="h-7 text-xs shrink-0" onClick={copyCmd}>
-            {copied ? "copied" : "copy"}
+        <div className="flex items-center gap-2 flex-wrap">
+          <Button size="sm" className="h-8 text-xs" onClick={setupOverSsh} disabled={run === "running"}>
+            {run === "running" ? "setting up over SSH…" : "Set up on my remote server"}
           </Button>
+          <span className="text-[11px] text-muted-foreground">
+            uses your Sync (remote) SSH login below
+          </span>
         </div>
-        <p className="text-[11px] text-muted-foreground leading-relaxed">
-          then push your screenpipe data to that box via the <span className="font-medium">Sync (remote)</span> tab
-          below. If the agent runs on a different box than screenpipe, append{" "}
-          <code className="bg-background px-1 rounded">--api-url http://&lt;host&gt;:3030</code>.
-        </p>
+        {run === "done" && <p className="text-[11px] text-green-600 dark:text-green-500">{msg}</p>}
+        {run === "error" && <p className="text-[11px] text-red-500">{msg}</p>}
+
+        <div className="pt-2 border-t border-border/60">
+          <p className="text-[11px] text-muted-foreground mb-1">or run it yourself on the box:</p>
+          <div className="flex items-center gap-2">
+            <code className="flex-1 text-xs font-mono bg-background border border-border rounded px-2 py-1.5 overflow-x-auto whitespace-nowrap">
+              {setupCmd}
+            </code>
+            <Button size="sm" variant="outline" className="h-7 text-xs shrink-0" onClick={copyCmd}>
+              {copied ? "copied" : "copy"}
+            </Button>
+          </div>
+        </div>
       </div>
 
       {/* Manual MCP/skill snippets + remote-sync; key resets tabs on change */}
