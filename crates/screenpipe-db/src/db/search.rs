@@ -1759,7 +1759,18 @@ impl DatabaseManager {
     /// people / projects / workflows that appear alongside a tag so an AI
     /// caller gets the surrounding context without N follow-up requests.
     /// Returns each co-occurring tag's full namespaced name and its count.
-    /// An empty `tags` slice returns an empty vec.
+    /// An empty `tags` slice returns an empty vec; duplicate inputs are folded
+    /// (the `DISTINCT` in the `input` CTE) so they match like a single tag.
+    ///
+    /// Cost: the vision/audio legs ride the tag indexes (`idx_*_tags_tag_id` +
+    /// `tags.name`), but the memories leg full-scans + `json_each` because
+    /// `memories.tags` is an unindexed JSON column — the same linear cost the
+    /// tag *filter* already pays (see `tests/tag_filter_bench.rs`). Measured on
+    /// a 200k-frame / 250k-vision_tag / 50k-memory in-memory DB: ~21 ms for a
+    /// realistic tag, ~150 ms worst-case for a hot tag on 50k items with wide
+    /// fan-out. The HTTP handler bounds it with a timeout and treats it as
+    /// optional. If memory counts ever reach millions, give them a
+    /// `memory_tags` junction table mirroring `vision_tags`.
     pub async fn related_tags(
         &self,
         tags: &[String],
@@ -1780,7 +1791,7 @@ impl DatabaseManager {
 
         let rows: Vec<(String, i64)> = sqlx::query_as(
             r#"
-            WITH input(name) AS (SELECT value FROM json_each(?1)),
+            WITH input(name) AS (SELECT DISTINCT value FROM json_each(?1)),
                  n(c) AS (SELECT COUNT(*) FROM input),
                  vision_matches(id) AS (
                      SELECT vt.vision_id

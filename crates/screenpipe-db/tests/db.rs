@@ -604,6 +604,125 @@ mod tests {
         assert!(db.related_tags(&[], 50).await.unwrap().is_empty());
     }
 
+    /// Adversarial inputs for `related_tags`: malformed memory JSON, colon-rich
+    /// tag values, duplicate inputs, store isolation, limit edges, unicode, and
+    /// quote/`%`/`_` injection-shaped strings. None may error or leak.
+    #[tokio::test]
+    async fn test_related_tags_edge_cases() {
+        let db = setup_test_db().await;
+        db.insert_video_chunk("v.mp4", "dev").await.unwrap();
+
+        // A frame carrying the anchor + a value that itself contains colons
+        // (e.g. a URL tag) — the split into a namespace happens in the route,
+        // so the DB must return the full name verbatim.
+        let f = db
+            .insert_frame("dev", None, None, Some("app"), Some(""), false, None)
+            .await
+            .unwrap();
+        db.add_tags(
+            f,
+            TagContentType::Vision,
+            vec![
+                "person:ada".to_string(),
+                "url:https://example.com:8080/x".to_string(),
+                "emoji:🦀".to_string(),
+            ],
+        )
+        .await
+        .unwrap();
+
+        // A memory carrying the anchor + a SQL-injection-shaped value. Bound as
+        // a JSON param, so it's inert; it must come back as data, not break out.
+        db.insert_memory(
+            "weird tags",
+            "user",
+            None,
+            Some(r#"["person:ada","weird:a' OR 1=1 --","like:50%_x"]"#),
+            0.5,
+            None,
+        )
+        .await
+        .unwrap();
+
+        // A memory whose `tags` column is NOT valid JSON. The `json_valid`
+        // guard must skip it instead of letting `json_each` raise and 500.
+        db.insert_memory("legacy", "user", None, Some("not valid json"), 0.5, None)
+            .await
+            .unwrap();
+        // ...and one carrying the anchor twice (deliberately) — the value must
+        // still be counted once per memory, not double.
+        db.insert_memory(
+            "dupe-in-row",
+            "user",
+            None,
+            Some(r#"["person:ada","person:ada","only:here"]"#),
+            0.5,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let related = db
+            .related_tags(&["person:ada".to_string()], 50)
+            .await
+            .unwrap();
+        let names: std::collections::HashSet<&str> =
+            related.iter().map(|(n, _)| n.as_str()).collect();
+        // Colon-rich and unicode values survive intact.
+        assert!(names.contains("url:https://example.com:8080/x"));
+        assert!(names.contains("emoji:🦀"));
+        // Injection-shaped strings come back as plain data.
+        assert!(names.contains("weird:a' OR 1=1 --"));
+        assert!(names.contains("like:50%_x"));
+        assert!(names.contains("only:here"));
+        // The anchor itself is never echoed back.
+        assert!(!names.contains("person:ada"));
+
+        // Duplicate input tags must behave like a single input (the DISTINCT in
+        // the input CTE), NOT silently match nothing.
+        let deduped = db
+            .related_tags(
+                &["person:ada".to_string(), "person:ada".to_string()],
+                50,
+            )
+            .await
+            .unwrap();
+        let deduped_names: std::collections::HashSet<&str> =
+            deduped.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(deduped_names, names, "duplicate inputs must equal single");
+
+        // limit = 0 → no rows (not an error).
+        assert!(db
+            .related_tags(&["person:ada".to_string()], 0)
+            .await
+            .unwrap()
+            .is_empty());
+
+        // A tag that exists on nothing → empty, no error.
+        assert!(db
+            .related_tags(&["person:ghost".to_string()], 50)
+            .await
+            .unwrap()
+            .is_empty());
+
+        // Store isolation: an anchor present ONLY in audio still finds its
+        // audio-side co-tags and nothing from unrelated frames/memories.
+        let ac = db.insert_audio_chunk("a.mp4", None).await.unwrap();
+        db.add_tags(
+            ac,
+            TagContentType::Audio,
+            vec!["call:standup".to_string(), "person:bob".to_string()],
+        )
+        .await
+        .unwrap();
+        let audio_only = db
+            .related_tags(&["call:standup".to_string()], 50)
+            .await
+            .unwrap();
+        assert_eq!(audio_only.len(), 1);
+        assert_eq!(audio_only[0], ("person:bob".to_string(), 1));
+    }
+
     #[tokio::test]
     async fn test_recent_output_audio_detects_deferred_output_chunk() {
         let db = setup_test_db().await;

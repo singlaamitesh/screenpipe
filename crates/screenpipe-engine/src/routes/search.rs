@@ -243,6 +243,14 @@ pub struct SearchResponse {
 /// a few namespaces this is plenty of context while staying token-cheap.
 const RELATED_TAGS_LIMIT: u32 = 30;
 
+/// Upper bound on the (auxiliary, opt-in) related-tags query. The memories leg
+/// full-scans (no tag index) and a hot tag fans out to items×tags rows, so on a
+/// pathological store this could run long; past this we drop the `related`
+/// block rather than dragging out the whole search response. Measured cost on a
+/// 200k-frame / 50k-memory DB is ~20ms (cold tag) to ~150ms (hot tag), so 5s is
+/// a generous safety net, not a normal-path limit.
+const RELATED_TAGS_TIMEOUT_SECS: u64 = 5;
+
 /// Pluralize a tag namespace into the `related` map key. Mirrors the shape
 /// callers expect (`person:` → `people`, `project:` → `projects`,
 /// `workflow:` → `workflows`); unknown namespaces just get a trailing `s`.
@@ -784,16 +792,29 @@ pub(crate) async fn search(
 
     // Co-occurring tags ("related" context). Only meaningful when the caller
     // both opted in and supplied a tag filter to relate against. This is
-    // auxiliary — a failure here must not sink an otherwise-good search, so we
-    // degrade to `None` and log rather than propagate the error.
+    // auxiliary — neither an error nor a slow query may sink an otherwise-good
+    // search, so we bound it with a timeout and degrade to `None` (logging)
+    // rather than propagating the failure or blocking the response.
     let related = if query.include_related && !tags.is_empty() {
-        match state.db.related_tags(tags, RELATED_TAGS_LIMIT).await {
-            Ok(rows) => {
+        match timeout(
+            Duration::from_secs(RELATED_TAGS_TIMEOUT_SECS),
+            state.db.related_tags(tags, RELATED_TAGS_LIMIT),
+        )
+        .await
+        {
+            Ok(Ok(rows)) => {
                 let grouped = group_related_tags(rows);
                 (!grouped.is_empty()).then_some(grouped)
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 warn!("related-tags query failed: {}", e);
+                None
+            }
+            Err(_) => {
+                warn!(
+                    "related-tags query exceeded {}s; omitting related block",
+                    RELATED_TAGS_TIMEOUT_SECS
+                );
                 None
             }
         }
