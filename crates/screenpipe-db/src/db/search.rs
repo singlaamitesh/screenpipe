@@ -1748,4 +1748,91 @@ impl DatabaseManager {
 
         Ok((latest_frame.map(|f| f.0), latest_audio.map(|a| a.0), None))
     }
+
+    /// Tags that co-occur with ALL of the given `tags`, most-frequent first,
+    /// excluding the input tags themselves. Spans the same three stores as the
+    /// tag filter on [`search_with_tags`](Self::search_with_tags): the screen
+    /// (`vision_tags`) and audio (`audio_tags`) junction tables plus the
+    /// `memories.tags` JSON array.
+    ///
+    /// Powers `GET /search?...&include_related=true`: one query surfaces the
+    /// people / projects / workflows that appear alongside a tag so an AI
+    /// caller gets the surrounding context without N follow-up requests.
+    /// Returns each co-occurring tag's full namespaced name and its count.
+    /// An empty `tags` slice returns an empty vec.
+    pub async fn related_tags(
+        &self,
+        tags: &[String],
+        limit: u32,
+    ) -> Result<Vec<(String, i64)>, sqlx::Error> {
+        if tags.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Same JSON-array binding trick as the tag filter: pass the tags as a
+        // JSON array and expand with `json_each`. `n.c` is the input cardinality
+        // so the `HAVING` clauses keep only items carrying ALL requested tags.
+        // The `memories.tags` reads wrap the column in `CASE WHEN json_valid`
+        // because a single legacy/sync row that isn't valid JSON would
+        // otherwise make `json_each` raise "malformed JSON" and 500 the whole
+        // query (same guard as `list_memory_tags`).
+        let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".to_string());
+
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            r#"
+            WITH input(name) AS (SELECT value FROM json_each(?1)),
+                 n(c) AS (SELECT COUNT(*) FROM input),
+                 vision_matches(id) AS (
+                     SELECT vt.vision_id
+                     FROM vision_tags vt JOIN tags t ON vt.tag_id = t.id
+                     WHERE t.name IN (SELECT name FROM input)
+                     GROUP BY vt.vision_id
+                     HAVING COUNT(DISTINCT t.name) = (SELECT c FROM n)
+                 ),
+                 audio_matches(id) AS (
+                     SELECT aud.audio_chunk_id
+                     FROM audio_tags aud JOIN tags t ON aud.tag_id = t.id
+                     WHERE t.name IN (SELECT name FROM input)
+                     GROUP BY aud.audio_chunk_id
+                     HAVING COUNT(DISTINCT t.name) = (SELECT c FROM n)
+                 ),
+                 memory_matches(id) AS (
+                     SELECT m.id
+                     FROM memories m
+                     WHERE (
+                         SELECT COUNT(DISTINCT j.value)
+                         FROM json_each(CASE WHEN json_valid(m.tags) THEN m.tags ELSE '[]' END) j
+                         WHERE j.value IN (SELECT name FROM input)
+                     ) = (SELECT c FROM n)
+                 ),
+                 co(name) AS (
+                     SELECT t.name
+                     FROM vision_tags vt JOIN tags t ON vt.tag_id = t.id
+                     WHERE vt.vision_id IN (SELECT id FROM vision_matches)
+                     UNION ALL
+                     SELECT t.name
+                     FROM audio_tags aud JOIN tags t ON aud.tag_id = t.id
+                     WHERE aud.audio_chunk_id IN (SELECT id FROM audio_matches)
+                     UNION ALL
+                     SELECT j.value
+                     FROM memories m,
+                          json_each(CASE WHEN json_valid(m.tags) THEN m.tags ELSE '[]' END) j
+                     WHERE m.id IN (SELECT id FROM memory_matches)
+                 )
+            SELECT name, COUNT(*) AS count
+            FROM co
+            WHERE name IS NOT NULL AND name != ''
+              AND name NOT IN (SELECT name FROM input)
+            GROUP BY name
+            ORDER BY count DESC, name ASC
+            LIMIT ?2
+            "#,
+        )
+        .bind(&tags_json)
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows)
+    }
 }
