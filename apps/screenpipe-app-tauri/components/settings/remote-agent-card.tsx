@@ -12,13 +12,13 @@ import {
 } from "./agent-card";
 import { Button } from "@/components/ui/button";
 import { commands } from "@/lib/utils/tauri";
-import { installAgentLocally } from "@/lib/agent-install";
 
 // One unified "Remote agent" entry that supersedes the separate OpenClaw and
-// Hermes cards: pick an agent, get the right MCP config (JSON / YAML / TOML),
-// skills (where supported), and the same SSH remote-sync flow. The picker drives
-// which AgentCard props render. New targets = one entry here (CLI side already
-// covers cursor/windsurf via `screenpipe agent setup`).
+// Hermes cards: pick an agent, then run ONE command on the machine where that
+// agent lives (your VPS / cloud box / Mac mini) to wire screenpipe into it —
+// skills (where supported) + the MCP server, in the right format. The Sync
+// (remote) tab pushes your data to that box. New targets = one entry here; the
+// `screenpipe agent setup` CLI already covers cursor/windsurf too.
 
 const JSON_SNIPPET = `{
   "mcpServers": {
@@ -66,12 +66,7 @@ function skillVariants(skillsDir: string): AgentCardProps["skills"] {
   ];
 }
 
-type TargetId =
-  | "openclaw"
-  | "hermes"
-  | "claude-code"
-  | "claude-desktop"
-  | "codex";
+type TargetId = "openclaw" | "hermes" | "claude-code" | "claude-desktop" | "codex";
 
 const TARGETS: { id: TargetId; label: string; props: AgentCardProps }[] = [
   {
@@ -81,7 +76,7 @@ const TARGETS: { id: TargetId; label: string; props: AgentCardProps }[] = [
       name: "OpenClaw",
       iconSrc: "/openclaw-icon.svg",
       description:
-        "Run any AI agent on your VPS 24/7. Wire it to screenpipe — sync your data, register the MCP server, or install the skill.",
+        "Run any AI agent on your VPS 24/7. Wire it to screenpipe — register the MCP server, install the skill, or sync your data.",
       homepage: "https://github.com/openclaw/openclaw",
       mcp: { format: "json", configPath: "~/openclaw/mcp.json", snippet: JSON_SNIPPET },
       skills: skillVariants("~/openclaw/skills"),
@@ -169,28 +164,18 @@ const TARGETS: { id: TargetId; label: string; props: AgentCardProps }[] = [
 
 export function RemoteAgentCard() {
   const [targetId, setTargetId] = useState<TargetId>("openclaw");
-  const [status, setStatus] = useState<"idle" | "working" | "done" | "error">("idle");
-  const [err, setErr] = useState("");
+  const [copied, setCopied] = useState(false);
   const target = TARGETS.find((t) => t.id === targetId) ?? TARGETS[0];
 
-  const setupLocally = async () => {
-    setStatus("working");
-    setErr("");
-    try {
-      await installAgentLocally({
-        mcpPath: target.props.mcp.configPath,
-        mcpFormat: target.props.mcp.format,
-        skills: target.props.skills.map((s) => ({ localPath: s.localPath, md: s.md })),
-      });
-      setStatus("done");
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-      setStatus("error");
-    }
-  };
+  const hasSkills = target.props.skills.length > 0;
+  const setupCmd = `npx screenpipe@latest agent setup ${target.id}`;
 
-  const copyRemoteCmd = () => {
-    void commands.copyTextToClipboard(`npx screenpipe@latest agent setup ${target.id}`);
+  const copyCmd = async () => {
+    try {
+      await commands.copyTextToClipboard(setupCmd);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {}
   };
 
   return (
@@ -201,8 +186,7 @@ export function RemoteAgentCard() {
           value={targetId}
           onChange={(e) => {
             setTargetId(e.target.value as TargetId);
-            setStatus("idle");
-            setErr("");
+            setCopied(false);
           }}
           className="h-8 rounded-md border border-border bg-background px-2 text-xs text-foreground"
         >
@@ -214,22 +198,29 @@ export function RemoteAgentCard() {
         </select>
       </div>
 
-      {/* one-click local; one-line remote */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <Button size="sm" className="h-8 text-xs" onClick={setupLocally} disabled={status === "working"}>
-          {status === "working"
-            ? "setting up…"
-            : status === "done"
-              ? `✓ set up — restart ${target.props.name}`
-              : "Set up on this machine"}
-        </Button>
-        <button onClick={copyRemoteCmd} className="text-[11px] text-muted-foreground underline">
-          on a remote machine? copy command
-        </button>
+      {/* Remote-first: one command on the box where the agent runs. */}
+      <div className="rounded-md border border-border bg-muted/40 p-3 space-y-2">
+        <p className="text-xs text-muted-foreground leading-relaxed">
+          <span className="text-foreground font-medium">Set it up where {target.props.name} runs</span>{" "}
+          — your VPS, a cloud box, a Mac mini, or this machine. Run this there; it
+          wires the screenpipe MCP{hasSkills ? " + skill" : ""} into {target.props.name}:
+        </p>
+        <div className="flex items-center gap-2">
+          <code className="flex-1 text-xs font-mono bg-background border border-border rounded px-2 py-1.5 overflow-x-auto whitespace-nowrap">
+            {setupCmd}
+          </code>
+          <Button size="sm" variant="outline" className="h-7 text-xs shrink-0" onClick={copyCmd}>
+            {copied ? "copied" : "copy"}
+          </Button>
+        </div>
+        <p className="text-[11px] text-muted-foreground leading-relaxed">
+          then push your screenpipe data to that box via the <span className="font-medium">Sync (remote)</span> tab
+          below. If the agent runs on a different box than screenpipe, append{" "}
+          <code className="bg-background px-1 rounded">--api-url http://&lt;host&gt;:3030</code>.
+        </p>
       </div>
-      {status === "error" && <p className="text-[11px] text-red-500">{err}</p>}
 
-      {/* manual MCP/skill snippets + remote-sync below; key resets tabs on change */}
+      {/* Manual MCP/skill snippets + remote-sync; key resets tabs on change */}
       <AgentCard key={target.id} {...target.props} />
     </div>
   );
