@@ -17,6 +17,7 @@ pub mod pipe;
 pub mod presets;
 pub mod profile;
 pub mod search;
+pub mod service;
 pub mod status;
 mod store_file;
 pub mod survey;
@@ -246,6 +247,13 @@ pub enum Command {
     Agent {
         #[command(subcommand)]
         subcommand: agent::AgentCommand,
+    },
+
+    /// Run screenpipe as a background service that starts at boot + stays up
+    /// (systemd on Linux, launchd on macOS). For always-on boxes / VPS.
+    Service {
+        #[command(subcommand)]
+        subcommand: service::ServiceCommand,
     },
 
     /// Manage connected integrations (Telegram, Slack, Discord, etc.)
