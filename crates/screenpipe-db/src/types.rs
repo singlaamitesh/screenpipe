@@ -99,6 +99,25 @@ pub struct Frame {
     pub app_name: String,
     pub window_name: String,
 }
+
+/// Lightweight intermediate for the first phase of deferred-join OCR search.
+/// Carries only the columns needed to apply LIMIT/ORDER before fetching the
+/// heavy text_json / full_text / accessibility_text blobs in phase 2.
+#[derive(FromRow, Debug)]
+pub struct OCRResultRawLight {
+    pub frame_id: i64,
+    pub frame_name: String,
+    pub timestamp: DateTime<Utc>,
+    pub file_path: String,
+    pub offset_index: i64,
+    pub app_name: String,
+    pub window_name: String,
+    pub browser_url: Option<String>,
+    pub focused: Option<bool>,
+    pub device_name: String,
+    pub text_source: Option<String>,
+}
+
 #[derive(FromRow, Debug)]
 pub struct OCRResultRaw {
     pub frame_id: i64,

@@ -459,4 +459,124 @@ mod tests {
             page2.len()
         );
     }
+
+    /// Regression test for #4474: deferred-join two-phase OCR search must
+    /// preserve ordering and return identical columns to the single-phase
+    /// implementation.
+    #[tokio::test]
+    async fn test_deferred_join_preserves_order_and_columns() {
+        let db = setup_test_db().await;
+
+        let now = Utc::now();
+        for i in 0..10i64 {
+            let ts = now + chrono::Duration::seconds(i);
+            let frame_id: i64 = sqlx::query_scalar(
+                "INSERT INTO frames (video_chunk_id, offset_index, timestamp, name, browser_url, app_name, window_name, focused, device_name) VALUES (NULL, ?1, ?2, ?3, NULL, 'test_app', 'test_window', 0, 'test-device') RETURNING id"
+            )
+            .bind(i)
+            .bind(ts)
+            .bind(format!("frame_{}", i))
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+
+            // Insert heavy text blob directly via raw SQL
+            sqlx::query("UPDATE frames SET full_text = ?1, text_json = ?2 WHERE id = ?3")
+                .bind(format!(
+                    "ocr content for frame {} with lots of text data",
+                    i
+                ))
+                .bind(r#"[{"word":"hello","x":10,"y":20,"w":50,"h":15}]"#)
+                .bind(frame_id)
+                .execute(&db.pool)
+                .await
+                .unwrap();
+        }
+
+        // search_ocr signature (no on_screen param):
+        // (query, limit, offset, start_time, end_time, app_name, window_name,
+        //  min_length, max_length, frame_name, browser_url, focused,
+        //  device_name, machine_id, tags)
+        //
+        // Search with limit < total to exercise deferred-join phase 2
+        let results = db
+            .search_ocr(
+                "",
+                3,
+                0, // query, limit, offset
+                None,
+                None, // start_time, end_time
+                None,
+                None, // app_name, window_name
+                None,
+                None, // min_length, max_length
+                None,
+                None, // frame_name, browser_url
+                None,
+                None, // focused, device_name
+                None, // machine_id
+                &[],  // tags
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 3, "limit=3 should return exactly 3 results");
+
+        // Verify descending ordering
+        for window in results.windows(2) {
+            assert!(
+                window[0].timestamp >= window[1].timestamp,
+                "results should be ordered by timestamp DESC"
+            );
+        }
+
+        // Verify heavy columns are populated (they were inserted in phase 2)
+        for r in &results {
+            assert!(
+                !r.ocr_text.is_empty(),
+                "full_text should be populated after phase 2 fetch"
+            );
+            assert!(
+                !r.text_json.is_empty(),
+                "text_json should be populated after phase 2 fetch"
+            );
+        }
+
+        // Verify pagination works across two-phase boundary
+        let page2 = db
+            .search_ocr(
+                "",
+                6,
+                3, // query, limit=6, offset=3
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &[],
+            )
+            .await
+            .unwrap();
+        assert!(
+            !page2.is_empty(),
+            "page 2 should return results from deferred-join without gaps"
+        );
+
+        // Ensure no duplicate frame IDs across pages (each ID appears exactly once)
+        let all_ids: Vec<i64> = results.iter().map(|r| r.frame_id).collect();
+        let page2_ids: Vec<i64> = page2.iter().map(|r| r.frame_id).collect();
+        for id in &page2_ids {
+            assert!(
+                !all_ids.contains(id),
+                "frame {} appears in both page 1 and page 2 — offset/limit broken",
+                id
+            );
+        }
+    }
 }

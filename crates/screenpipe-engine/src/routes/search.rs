@@ -540,7 +540,7 @@ pub(crate) async fn search(
     let tags = query.tags.as_deref().unwrap_or(&[]);
 
     let (results, total) = timeout(
-        Duration::from_secs(30),
+        Duration::from_secs(45),
         try_join(
             state.db.search_with_tags(
                 query_str,

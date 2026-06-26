@@ -402,7 +402,7 @@ impl DatabaseManager {
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn search_ocr(
+    pub async fn search_ocr(
         &self,
         query: &str,
         limit: u32,
@@ -469,24 +469,24 @@ impl DatabaseManager {
         let fts_query = frame_fts_parts.join(" ");
         let has_fts = !fts_query.trim().is_empty();
 
-        let sql = format!(
+        // Phase 1: fetch only lightweight columns (no text blobs) with the full
+        // WHERE/LIMIT/ORDER.  This avoids reading multi-MB text_json/full_text/
+        // accessibility_text for thousands of candidate rows that the LIMIT will
+        // discard — the dominant cost on large DBs (see issue #4474).
+        let id_sql = format!(
             r#"
         SELECT
             frames.id as frame_id,
-            COALESCE(frames.full_text, frames.accessibility_text, '') as ocr_text,
-            frames.text_json,
-            frames.timestamp,
             frames.name as frame_name,
+            frames.timestamp,
             COALESCE(frames.snapshot_path, video_chunks.file_path) as file_path,
             frames.offset_index,
             frames.app_name,
-            '' as ocr_engine,
             frames.window_name,
-            COALESCE(video_chunks.device_name, frames.device_name) as device_name,
-            GROUP_CONCAT(tags.name, ',') as tags,
             frames.browser_url,
             frames.focused,
-            frames.text_source
+            frames.text_source,
+            COALESCE(video_chunks.device_name, frames.device_name) as device_name
         FROM frames
         LEFT JOIN video_chunks ON frames.video_chunk_id = video_chunks.id
         LEFT JOIN vision_tags ON frames.id = vision_tags.vision_id
@@ -531,9 +531,9 @@ impl DatabaseManager {
         // filter via the `json_array_length(?12) = 0` guard above.
         let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".to_string());
 
-        let query_builder = sqlx::query_as(&sql);
+        let id_query_builder = sqlx::query_as::<_, OCRResultRawLight>(&id_sql);
 
-        let raw_results: Vec<OCRResultRaw> = query_builder
+        let light_results: Vec<OCRResultRawLight> = id_query_builder
             .bind(if has_fts { Some(&fts_query) } else { None })
             .bind(start_time)
             .bind(end_time)
@@ -549,29 +549,87 @@ impl DatabaseManager {
             .fetch_all(&self.pool)
             .await?;
 
-        Ok(raw_results
-            .into_iter()
-            .map(|raw| OCRResult {
-                frame_id: raw.frame_id,
-                ocr_text: raw.ocr_text,
-                text_json: raw.text_json,
-                timestamp: raw.timestamp,
-                frame_name: raw.frame_name,
-                file_path: raw.file_path,
-                offset_index: raw.offset_index,
-                app_name: raw.app_name,
-                ocr_engine: raw.ocr_engine,
-                window_name: raw.window_name,
-                device_name: raw.device_name,
-                tags: raw
-                    .tags
-                    .map(|t| t.split(',').map(String::from).collect())
-                    .unwrap_or_default(),
-                browser_url: raw.browser_url,
-                focused: raw.focused,
-                text_source: raw.text_source,
-            })
-            .collect())
+        // Phase 2: fetch only the display-oriented columns (text blobs, tags
+        // concat) for the final page of frame IDs — typically <50 rows even on
+        // a multi-million-row DB.  Heavy columns are never read for discarded
+        // candidates.
+        let frame_ids: Vec<i64> = light_results.iter().map(|r| r.frame_id).collect();
+        let mut results = Vec::with_capacity(light_results.len());
+
+        for chunk in frame_ids.chunks(200) {
+            let placeholders: Vec<String> = chunk.iter().map(|_| "?".to_string()).collect();
+            let in_clause = placeholders.join(",");
+
+            let heavy_sql = format!(
+                r#"
+            SELECT
+                frames.id as frame_id,
+                COALESCE(frames.full_text, frames.accessibility_text, '') as ocr_text,
+                frames.text_json,
+                frames.name as frame_name,
+                frames.timestamp,
+                COALESCE(frames.snapshot_path, video_chunks.file_path) as file_path,
+                frames.offset_index,
+                frames.app_name,
+                '' as ocr_engine,
+                frames.window_name,
+                COALESCE(video_chunks.device_name, frames.device_name) as device_name,
+                GROUP_CONCAT(tags.name, ',') as tags,
+                frames.browser_url,
+                frames.focused,
+                frames.text_source
+            FROM frames
+            LEFT JOIN video_chunks ON frames.video_chunk_id = video_chunks.id
+            LEFT JOIN vision_tags ON frames.id = vision_tags.vision_id
+            LEFT JOIN tags ON vision_tags.tag_id = tags.id
+            WHERE frames.id IN ({in_clause})
+            GROUP BY frames.id
+            "#,
+            );
+
+            let mut qb = sqlx::query_as::<_, OCRResultRaw>(&heavy_sql);
+            for id in chunk {
+                qb = qb.bind(*id);
+            }
+            let raw_chunk = qb.fetch_all(&self.pool).await?;
+
+            // Build a frame_id → raw lookup so we can emit results in phase-1
+            // order (timestamp DESC).  Phase 2 has no ORDER BY and GROUP BY
+            // may reorder rows.
+            let mut raw_map = std::collections::HashMap::with_capacity(raw_chunk.len());
+            for raw in raw_chunk {
+                raw_map.insert(raw.frame_id, raw);
+            }
+
+            // Emit in phase-1 order to preserve LIMIT/OFFSET semantics.
+            for light in &light_results {
+                if let Some(raw) = raw_map.get(&light.frame_id) {
+                    results.push(OCRResult {
+                        frame_id: raw.frame_id,
+                        ocr_text: raw.ocr_text.clone(),
+                        text_json: raw.text_json.clone(),
+                        timestamp: light.timestamp,
+                        frame_name: raw.frame_name.clone(),
+                        file_path: raw.file_path.clone(),
+                        offset_index: raw.offset_index,
+                        app_name: raw.app_name.clone(),
+                        ocr_engine: raw.ocr_engine.clone(),
+                        window_name: raw.window_name.clone(),
+                        device_name: raw.device_name.clone(),
+                        tags: raw
+                            .tags
+                            .clone()
+                            .map(|t| t.split(',').map(String::from).collect())
+                            .unwrap_or_default(),
+                        browser_url: raw.browser_url.clone(),
+                        focused: raw.focused,
+                        text_source: raw.text_source.clone(),
+                    });
+                }
+            }
+        }
+
+        Ok(results)
     }
 
     #[allow(clippy::too_many_arguments)]
